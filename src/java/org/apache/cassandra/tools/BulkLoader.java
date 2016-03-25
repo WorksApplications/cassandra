@@ -18,21 +18,21 @@
 package org.apache.cassandra.tools;
 
 import java.io.File;
-import java.net.*;
-import java.util.*;
-
-import com.google.common.base.Joiner;
-import com.google.common.collect.HashMultimap;
-import com.google.common.collect.Multimap;
-import com.google.common.collect.Sets;
-
-import org.apache.commons.cli.*;
-import org.apache.thrift.protocol.TBinaryProtocol;
-import org.apache.thrift.protocol.TProtocol;
-import org.apache.thrift.transport.TTransport;
+import java.net.InetAddress;
+import java.net.MalformedURLException;
+import java.net.UnknownHostException;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
 
 import org.apache.cassandra.auth.IAuthenticator;
-import org.apache.cassandra.config.*;
+import org.apache.cassandra.config.CFMetaData;
+import org.apache.cassandra.config.Config;
+import org.apache.cassandra.config.DatabaseDescriptor;
+import org.apache.cassandra.config.EncryptionOptions;
+import org.apache.cassandra.config.YamlConfigurationLoader;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.marshal.UTF8Type;
@@ -40,11 +40,40 @@ import org.apache.cassandra.dht.Range;
 import org.apache.cassandra.dht.Token;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.SSTableLoader;
-import org.apache.cassandra.streaming.*;
-import org.apache.cassandra.thrift.*;
+import org.apache.cassandra.streaming.ProgressInfo;
+import org.apache.cassandra.streaming.SessionInfo;
+import org.apache.cassandra.streaming.StreamConnectionFactory;
+import org.apache.cassandra.streaming.StreamEvent;
+import org.apache.cassandra.streaming.StreamEventHandler;
+import org.apache.cassandra.streaming.StreamResultFuture;
+import org.apache.cassandra.streaming.StreamState;
+import org.apache.cassandra.thrift.AuthenticationRequest;
+import org.apache.cassandra.thrift.Cassandra;
+import org.apache.cassandra.thrift.Compression;
+import org.apache.cassandra.thrift.ConsistencyLevel;
+import org.apache.cassandra.thrift.CqlResult;
+import org.apache.cassandra.thrift.CqlRow;
+import org.apache.cassandra.thrift.ITransportFactory;
+import org.apache.cassandra.thrift.SSLTransportFactory;
+import org.apache.cassandra.thrift.TFramedTransportFactory;
+import org.apache.cassandra.thrift.TokenRange;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.apache.cassandra.utils.OutputHandler;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.GnuParser;
+import org.apache.commons.cli.HelpFormatter;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
+import org.apache.thrift.protocol.TBinaryProtocol;
+import org.apache.thrift.protocol.TProtocol;
+import org.apache.thrift.transport.TTransport;
+
+import com.google.common.base.Joiner;
+import com.google.common.collect.HashMultimap;
+import com.google.common.collect.Multimap;
 
 public class BulkLoader
 {
@@ -53,12 +82,12 @@ public class BulkLoader
     private static final String HELP_OPTION  = "help";
     private static final String NOPROGRESS_OPTION  = "no-progress";
     private static final String IGNORE_NODES_OPTION  = "ignore";
+    private static final String TENANT_ID="tenantId";
     private static final String INITIAL_HOST_ADDRESS_OPTION = "nodes";
     private static final String RPC_PORT_OPTION = "port";
     private static final String USER_OPTION = "username";
     private static final String PASSWD_OPTION = "password";
     private static final String THROTTLE_MBITS = "throttle";
-
     private static final String TRANSPORT_FACTORY = "transport-factory";
 
     /* client encryption options */
@@ -89,7 +118,8 @@ public class BulkLoader
                         options.sslStoragePort,
                         options.serverEncOptions),
                 handler,
-                options.connectionsPerHost);
+                options.connectionsPerHost,
+                options.tenantId);
         DatabaseDescriptor.setStreamThroughputOutboundMegabitsPerSec(options.throttle);
         StreamResultFuture future = null;
 
@@ -388,7 +418,8 @@ public class BulkLoader
 
         public final Set<InetAddress> hosts = new HashSet<>();
         public final Set<InetAddress> ignores = new HashSet<>();
-
+        public String tenantId = null;
+ 
         LoaderOptions(File directory)
         {
             this.directory = directory;
@@ -445,7 +476,14 @@ public class BulkLoader
 
                 if (cmd.hasOption(PASSWD_OPTION))
                     opts.passwd = cmd.getOptionValue(PASSWD_OPTION);
-
+                
+                if(cmd.hasOption(TENANT_ID)){
+                	opts.tenantId = cmd.getOptionValue(TENANT_ID);
+                }
+                if(!cmd.hasOption(TENANT_ID)){
+                	opts.tenantId="";
+                }
+                
                 if (cmd.hasOption(INITIAL_HOST_ADDRESS_OPTION))
                 {
                     String[] nodes = cmd.getOptionValue(INITIAL_HOST_ADDRESS_OPTION).split(",");
@@ -648,6 +686,7 @@ public class BulkLoader
             options.addOption("st", SSL_STORE_TYPE, "STORE-TYPE", "Client SSL: type of store");
             options.addOption("ciphers", SSL_CIPHER_SUITES, "CIPHER-SUITES", "Client SSL: comma-separated list of encryption suites to use");
             options.addOption("f", CONFIG_PATH, "path to config file", "cassandra.yaml file path for streaming throughput and client/server SSL.");
+            options.addOption("o", TENANT_ID, "tenant Id", "Data will be transfered for only this tenant Id");
             return options;
         }
 

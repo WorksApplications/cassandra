@@ -58,6 +58,7 @@ import org.apache.cassandra.db.RowPosition;
 import org.apache.cassandra.db.SystemKeyspace;
 import org.apache.cassandra.db.commitlog.ReplayPosition;
 import org.apache.cassandra.db.index.SecondaryIndex;
+import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.dht.AbstractBounds;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.dht.LocalPartitioner;
@@ -151,7 +152,7 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
 {
     private static final Logger logger = LoggerFactory.getLogger(SSTableReader.class);
     private static final int ACCURATE_BOUNDARIES_MAGIC_NUMBER = 248923458;
-
+    private static final List<DecoratedKey> allDecoratedKeyForGivenTenant = new ArrayList<>();
     private static final ScheduledThreadPoolExecutor syncExecutor = new ScheduledThreadPoolExecutor(1);
     static
     {
@@ -402,8 +403,13 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
      */
     public static SSTableReader openForBatch(Descriptor descriptor, Set<Component> components, CFMetaData metadata, IPartitioner partitioner) throws IOException
     {
+    	return openForBatch(descriptor, components, metadata, partitioner, "");
+    }
+    
+    public static SSTableReader openForBatch(Descriptor descriptor, Set<Component> components, CFMetaData metadata, IPartitioner partitioner, String tenantId) throws IOException
+    {
         // Minimum components without which we can't do anything
-        assert components.contains(Component.DATA) : "Data component is missing for sstable" + descriptor;
+    	assert components.contains(Component.DATA) : "Data component is missing for sstable" + descriptor;
         assert components.contains(Component.PRIMARY_INDEX) : "Primary index component is missing for sstable " + descriptor;
 
         Map<MetadataType, MetadataComponent> sstableMetadata = descriptor.getMetadataSerializer().deserialize(descriptor,
@@ -437,7 +443,7 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
                                        ? new CompressedSegmentedFile.Builder(null)
                                        : new BufferedSegmentedFile.Builder();
         if (!sstable.loadSummary(ibuilder, dbuilder))
-            sstable.buildSummary(false, ibuilder, dbuilder, false, Downsampling.BASE_SAMPLING_LEVEL);
+            sstable.buildSummary(false, ibuilder, dbuilder, false, Downsampling.BASE_SAMPLING_LEVEL,tenantId);
         sstable.ifile = ibuilder.complete(sstable.descriptor.filenameFor(Component.PRIMARY_INDEX));
         sstable.dfile = dbuilder.complete(sstable.descriptor.filenameFor(Component.DATA));
         sstable.bf = FilterFactory.AlwaysPresent;
@@ -805,7 +811,12 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
      * @param summaryLoaded true if index summary is already loaded and not need to build again
      * @throws IOException
      */
-    private void buildSummary(boolean recreateBloomFilter, SegmentedFile.Builder ibuilder, SegmentedFile.Builder dbuilder, boolean summaryLoaded, int samplingLevel) throws IOException
+    private void buildSummary(boolean recreateBloomFilter, SegmentedFile.Builder ibuilder, SegmentedFile.Builder dbuilder, boolean summaryLoaded, int samplingLevel) throws IOException{
+    	buildSummary(recreateBloomFilter, ibuilder, dbuilder, summaryLoaded, samplingLevel,"");
+    	return;
+    }
+    
+    private void buildSummary(boolean recreateBloomFilter, SegmentedFile.Builder ibuilder, SegmentedFile.Builder dbuilder, boolean summaryLoaded, int samplingLevel, String tenantId) throws IOException
     {
          if (!components.contains(Component.PRIMARY_INDEX))
              return;
@@ -828,6 +839,7 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
                     bf = FilterFactory.getFilter(estimatedKeys, metadata.getBloomFilterFpChance(), true);
 
                 long indexPosition;
+                allDecoratedKeyForGivenTenant.clear();
                 while ((indexPosition = primaryIndex.getFilePointer()) != indexSize)
                 {
                     ByteBuffer key = ByteBufferUtil.readWithShortLength(primaryIndex);
@@ -837,6 +849,12 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
                         first = decoratedKey;
                     last = decoratedKey;
 
+                    //Check whether this current key contains tenantId or not
+                    // TODO what If the size of index file is too much big that we can not store the in list please write to disk  
+                    if(doesContainTenantId(decoratedKey, tenantId)){
+                    	allDecoratedKeyForGivenTenant.add(decoratedKey);
+                    }
+                    
                     if (recreateBloomFilter)
                         bf.add(decoratedKey.getKey());
 
@@ -862,6 +880,7 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
         last = getMinimalKey(last);
     }
 
+    
     /**
      * Load index summary from Summary.db file if it exists.
      *
@@ -911,7 +930,7 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
             // corrupted; delete it and fall back to creating a new summary
             FileUtils.closeQuietly(iStream);
             // delete it and fall back to creating a new summary
-            FileUtils.deleteWithConfirm(summariesFile);
+            //FileUtils.deleteWithConfirm(summariesFile);
             return false;
         }
         finally
@@ -1491,9 +1510,14 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
 
     /**
      * Determine the minimal set of sections that can be extracted from this SSTable to cover the given ranges.
+     * @param string 
      * @return A sorted list of (offset,end) pairs that cover the given ranges in the datafile for this SSTable.
      */
-    public List<Pair<Long,Long>> getPositionsForRanges(Collection<Range<Token>> ranges)
+    public List<Pair<Long,Long>> getPositionsForRanges(Collection<Range<Token>> ranges){
+    	return getPositionsForRanges(ranges,"");
+    }
+  
+	public List<Pair<Long,Long>> getPositionsForRanges(Collection<Range<Token>> ranges, String tenantId)
     {
         // use the index to determine a minimal section for each range
         List<Pair<Long,Long>> positions = new ArrayList<>();
@@ -1508,6 +1532,20 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
             if (leftBound.compareTo(last) > 0 || rightBound.compareTo(first) < 0)
                 continue;
 
+            // if user have passed tenant Id then please filter the sections 
+            if(!tenantId.isEmpty()){
+            	List <Pair<Long,Long>> allTargetPositions = new ArrayList<>();
+            	for(DecoratedKey decoratedKey : allDecoratedKeyForGivenTenant){
+            		boolean isLastDecoratedKey = false;
+            		// this condition is to check if decorated key is last key or not Because there is different way to calculate row position for last decorated key 
+            		if(decoratedKey.equals(last)){
+            			isLastDecoratedKey=true;
+            		}
+            		allTargetPositions.add(getRowPositionForDecoratedKey(decoratedKey, isLastDecoratedKey));
+            	}
+            	return allTargetPositions;
+            }
+            
             long left = getPosition(leftBound, Operator.GT).position;
             long right = (rightBound.compareTo(last) > 0)
                          ? uncompressedLength()
@@ -1516,14 +1554,60 @@ public class SSTableReader extends SSTable implements SelfRefCounted<SSTableRead
             if (left == right)
                 // empty range
                 continue;
-
+            
             assert left < right : String.format("Range=%s openReason=%s first=%s last=%s left=%d right=%d", range, openReason, first, last, left, right);
             positions.add(Pair.create(left, right));
         }
         return positions;
     }
 
-    public KeyCacheKey getCacheKey(DecoratedKey key)
+	/**
+	 * 
+	 * @param decoratedKey
+	 * @param isLastKey
+	 * @return section for given decorated key Pair<Long,Long>
+	 * @author barala
+	 */
+	public Pair<Long,Long> getRowPositionForDecoratedKey(DecoratedKey decoratedKey,boolean isLastKey){
+    	RowPosition leftBound = decoratedKey.getToken().minKeyBound();
+    	RowPosition rightBound = decoratedKey.getToken().maxKeyBound();
+    	long left = getPosition(leftBound, Operator.GT).position;
+    	long right = 0;
+    	if(isLastKey){
+    		right = uncompressedLength(); // for last decorated key we calculate row position in this way 
+    	}else{
+    		right = getPosition(rightBound, Operator.GT).position;
+    	}
+		assert left < right : String.format("openReason=%s first=%s last=%s left=%d right=%d", openReason, first, last, left, right);
+
+    	return Pair.create(left, right);
+    }
+	
+
+    /**
+     * 
+     * @param decoratedKey, tenantId
+     * @param tenantId
+     * @return boolean
+     * @author barala
+     */
+    private static boolean doesContainTenantId(DecoratedKey decoratedKey,String tenantId){
+    	return getFirstPk(decoratedKey).equals(tenantId);
+    }
+    
+    /**
+     * 
+     * @param decoratedKey
+     * @return first partition key
+     * @author barala
+     */
+    private static String getFirstPk(DecoratedKey decoratedKey){
+    	 ByteBuffer firstPkBf = ByteBufferUtil.readBytesWithShortLength(decoratedKey.getKey().duplicate());
+    	 return UTF8Type.instance.getString(firstPkBf);
+    }
+    
+
+	public KeyCacheKey getCacheKey(DecoratedKey key)
     {
         return new KeyCacheKey(metadata.ksAndCFName, descriptor, key.getKey());
     }

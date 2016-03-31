@@ -50,6 +50,7 @@ public class SSTableLoader implements StreamEventHandler
     private final File directory;
     private final String keyspace;
     private final Client client;
+    private final String tenantId;
     private final int connectionsPerHost;
     private final OutputHandler outputHandler;
     private final Set<InetAddress> failedHosts = new HashSet<>();
@@ -59,14 +60,15 @@ public class SSTableLoader implements StreamEventHandler
 
     public SSTableLoader(File directory, Client client, OutputHandler outputHandler)
     {
-        this(directory, client, outputHandler, 1);
+        this(directory, client, outputHandler, 1,"");
     }
 
-    public SSTableLoader(File directory, Client client, OutputHandler outputHandler, int connectionsPerHost)
+    public SSTableLoader(File directory, Client client, OutputHandler outputHandler, int connectionsPerHost, String tenantId)
     {
         this.directory = directory;
         this.keyspace = directory.getParentFile().getName();
         this.client = client;
+        this.tenantId = tenantId;
         this.outputHandler = outputHandler;
         this.connectionsPerHost = connectionsPerHost;
     }
@@ -114,7 +116,7 @@ public class SSTableLoader implements StreamEventHandler
                     // To conserve memory, open SSTableReaders without bloom filters and discard
                     // the index summary after calculating the file sections to stream and the estimated
                     // number of keys for each endpoint. See CASSANDRA-5555 for details.
-                    SSTableReader sstable = SSTableReader.openForBatch(desc, components, metadata, client.getPartitioner());
+                    SSTableReader sstable = SSTableReader.openForBatch(desc, components, metadata, client.getPartitioner(), tenantId);
                     sstables.add(sstable);
 
                     // calculate the sstable sections to stream as well as the estimated number of
@@ -124,7 +126,7 @@ public class SSTableLoader implements StreamEventHandler
                         InetAddress endpoint = entry.getKey();
                         Collection<Range<Token>> tokenRanges = entry.getValue();
 
-                        List<Pair<Long, Long>> sstableSections = sstable.getPositionsForRanges(tokenRanges);
+                        List<Pair<Long, Long>> sstableSections = sstable.getPositionsForRanges(tokenRanges,tenantId);
                         long estimatedKeys = sstable.estimatedKeysForRanges(tokenRanges);
                         Ref ref = sstable.tryRef();
                         if (ref == null)

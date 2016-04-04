@@ -1,0 +1,771 @@
+From be41e13e012001b1eb34a3e9d94f3ba62014a621 Mon Sep 17 00:00:00 2001
+From: Varun Barala <barala_v@worksap.co.jp>
+Date: Fri, 25 Mar 2016 11:51:13 +0800
+Subject: [PATCH 1/3] added core logic for tenant filter
+
+---
+ src/java/org/apache/cassandra/dht/Range.java       |  1 +
+ .../apache/cassandra/io/sstable/SSTableLoader.java | 19 ++++-
+ .../apache/cassandra/io/sstable/SSTableReader.java | 96 +++++++++++++++++++---
+ .../org/apache/cassandra/tools/BulkLoader.java     |  2 +-
+ src/java/org/apache/cassandra/utils/Pair.java      |  2 +-
+ 5 files changed, 104 insertions(+), 16 deletions(-)
+
+diff --git a/src/java/org/apache/cassandra/dht/Range.java b/src/java/org/apache/cassandra/dht/Range.java
+index 44b76d5..6ac49cd 100644
+--- a/src/java/org/apache/cassandra/dht/Range.java
++++ b/src/java/org/apache/cassandra/dht/Range.java
+@@ -403,6 +403,7 @@ public class Range<T extends RingPosition<T>> extends AbstractBounds<T> implemen
+         });
+ 
+         // deoverlap
++        //return output;
+         return deoverlap(output);
+     }
+ 
+diff --git a/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java b/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java
+index 06f71d8..79440ef 100644
+--- a/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java
++++ b/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java
+@@ -21,6 +21,7 @@ import java.io.File;
+ import java.io.FilenameFilter;
+ import java.io.IOException;
+ import java.net.InetAddress;
++import java.net.UnknownHostException;
+ import java.util.*;
+ 
+ import com.google.common.collect.HashMultimap;
+@@ -38,7 +39,6 @@ import org.apache.cassandra.streaming.*;
+ import org.apache.cassandra.utils.FBUtilities;
+ import org.apache.cassandra.utils.OutputHandler;
+ import org.apache.cassandra.utils.Pair;
+-
+ import org.apache.cassandra.utils.concurrent.Ref;
+ 
+ /**
+@@ -82,7 +82,8 @@ public class SSTableLoader implements StreamEventHandler
+ 
+         directory.list(new FilenameFilter()
+         {
+-            public boolean accept(File dir, String name)
++            @SuppressWarnings("unchecked")
++			public boolean accept(File dir, String name)
+             {
+                 if (new File(dir, name).isDirectory())
+                     return false;
+@@ -128,8 +129,13 @@ public class SSTableLoader implements StreamEventHandler
+                     {
+                         InetAddress endpoint = entry.getKey();
+                         Collection<Range<Token>> tokenRanges = entry.getValue();
+-
++                        System.out.println("Please replay!!");
+                         List<Pair<Long, Long>> sstableSections = sstable.getPositionsForRanges(tokenRanges);
++//                        sstableSections.clear();
++//                        Long A = (long) 0;
++//                        Long B = (long) 92;
++//                        sstableSections.add(new Pair(A,B));
++                        System.out.println(sstableSections);
+                         long estimatedKeys = sstable.estimatedKeysForRanges(tokenRanges);
+                         Ref ref = sstable.tryRef();
+                         if (ref == null)
+@@ -160,11 +166,16 @@ public class SSTableLoader implements StreamEventHandler
+     {
+         client.init(keyspace);
+         outputHandler.output("Established connection to initial hosts");
+-
++        System.out.println("BBC");
+         StreamPlan plan = new StreamPlan("Bulk Load", 0, connectionsPerHost).connectionFactory(client.getConnectionFactory());
+ 
+         Map<InetAddress, Collection<Range<Token>>> endpointToRanges = client.getEndpointToRangesMap();
++        for(Map.Entry<InetAddress, Collection<Range<Token>>> entry : endpointToRanges.entrySet()){
++        		System.out.println(entry.getValue().size());
++        		System.out.println(entry.getValue());
++        }
+         openSSTables(endpointToRanges);
++        System.out.println("this above funtion opens the sstable -> from given directory path ");
+         if (sstables.isEmpty())
+         {
+             // return empty result
+diff --git a/src/java/org/apache/cassandra/io/sstable/SSTableReader.java b/src/java/org/apache/cassandra/io/sstable/SSTableReader.java
+index f34939a..6ed0803 100644
+--- a/src/java/org/apache/cassandra/io/sstable/SSTableReader.java
++++ b/src/java/org/apache/cassandra/io/sstable/SSTableReader.java
+@@ -50,12 +50,16 @@ import com.google.common.collect.Iterators;
+ import com.google.common.collect.Ordering;
+ import com.google.common.primitives.Longs;
+ import com.google.common.util.concurrent.RateLimiter;
++
++import javafx.scene.control.IndexRange;
++
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ 
+ import com.clearspring.analytics.stream.cardinality.CardinalityMergeException;
+ import com.clearspring.analytics.stream.cardinality.HyperLogLogPlus;
+ import com.clearspring.analytics.stream.cardinality.ICardinality;
++
+ import org.apache.cassandra.cache.CachingOptions;
+ import org.apache.cassandra.cache.InstrumentingCache;
+ import org.apache.cassandra.cache.KeyCacheKey;
+@@ -76,6 +80,7 @@ import org.apache.cassandra.db.RowPosition;
+ import org.apache.cassandra.db.SystemKeyspace;
+ import org.apache.cassandra.db.commitlog.ReplayPosition;
+ import org.apache.cassandra.db.index.SecondaryIndex;
++import org.apache.cassandra.db.marshal.UTF8Type;
+ import org.apache.cassandra.dht.AbstractBounds;
+ import org.apache.cassandra.dht.IPartitioner;
+ import org.apache.cassandra.dht.LocalPartitioner;
+@@ -103,6 +108,7 @@ import org.apache.cassandra.metrics.StorageMetrics;
+ import org.apache.cassandra.service.ActiveRepairService;
+ import org.apache.cassandra.service.CacheService;
+ import org.apache.cassandra.service.StorageService;
++import org.apache.cassandra.tools.BulkLoader;
+ import org.apache.cassandra.tracing.Tracing;
+ import org.apache.cassandra.utils.ByteBufferUtil;
+ import org.apache.cassandra.utils.CLibrary;
+@@ -115,6 +121,7 @@ import org.apache.cassandra.utils.concurrent.OpOrder;
+ import org.apache.cassandra.utils.concurrent.Ref;
+ import org.apache.cassandra.utils.concurrent.RefCounted;
+ 
++import sun.misc.Perf.GetPerfAction;
+ import static org.apache.cassandra.db.Directories.SECONDARY_INDEX_NAME_SEPARATOR;
+ 
+ /**
+@@ -127,7 +134,9 @@ public class SSTableReader extends SSTable implements RefCounted
+ 
+     private static final ScheduledThreadPoolExecutor syncExecutor = new ScheduledThreadPoolExecutor(1);
+     private static final RateLimiter meterSyncThrottle = RateLimiter.create(100.0);
+-
++    private static final List<DecoratedKey> allDecoratedKeys = new ArrayList<>();
++    private static final String tenantId = "tenant6";
++    
+     public static final Comparator<SSTableReader> maxTimestampComparator = new Comparator<SSTableReader>()
+     {
+         public int compare(SSTableReader o1, SSTableReader o2)
+@@ -731,6 +740,7 @@ public class SSTableReader extends SSTable implements RefCounted
+                 summaryBuilder = new IndexSummaryBuilder(estimatedKeys, metadata.getMinIndexInterval(), samplingLevel);
+ 
+             long indexPosition;
++            allDecoratedKeys.clear();
+             while ((indexPosition = primaryIndex.getFilePointer()) != indexSize)
+             {
+                 ByteBuffer key = ByteBufferUtil.readWithShortLength(primaryIndex);
+@@ -739,7 +749,8 @@ public class SSTableReader extends SSTable implements RefCounted
+                 if (first == null)
+                     first = decoratedKey;
+                 last = decoratedKey;
+-
++                allDecoratedKeys.add(decoratedKey);
++                System.out.println(allDecoratedKeys);
+                 if (recreateBloomFilter)
+                     bf.add(decoratedKey.getKey());
+ 
+@@ -1209,7 +1220,6 @@ public class SSTableReader extends SSTable implements RefCounted
+     public Iterable<DecoratedKey> getKeySamples(final Range<Token> range)
+     {
+         final List<Pair<Integer, Integer>> indexRanges = getSampleIndexesForRanges(indexSummary, Collections.singletonList(range));
+-
+         if (indexRanges.isEmpty())
+             return Collections.emptyList();
+ 
+@@ -1218,7 +1228,8 @@ public class SSTableReader extends SSTable implements RefCounted
+             public Iterator<DecoratedKey> iterator()
+             {
+                 return new Iterator<DecoratedKey>()
+-                {
++                {	
++                	
+                     private Iterator<Pair<Integer, Integer>> rangeIter = indexRanges.iterator();
+                     private Pair<Integer, Integer> current;
+                     private int idx;
+@@ -1258,21 +1269,53 @@ public class SSTableReader extends SSTable implements RefCounted
+      * Determine the minimal set of sections that can be extracted from this SSTable to cover the given ranges.
+      * @return A sorted list of (offset,end) pairs that cover the given ranges in the datafile for this SSTable.
+      */
+-    public List<Pair<Long,Long>> getPositionsForRanges(Collection<Range<Token>> ranges)
++    public List<Pair<Long,Long>> getPositionsForRanges(Collection<Range<Token>> ranges) // this is fZor target node  
+     {
+         // use the index to determine a minimal section for each range
+-        List<Pair<Long,Long>> positions = new ArrayList<>();
++        List<Pair<Long,Long>> positions = new ArrayList<>(); // this is gonna be range part for current SSTable
++        int count=0;
+         for (Range<Token> range : Range.normalize(ranges))
+-        {
++        {	count++;
+             assert !range.isWrapAround() || range.right.isMinimum();
+             // truncate the range so it at most covers the sstable
+             AbstractBounds<RowPosition> bounds = range.toRowBounds();
+             RowPosition leftBound = bounds.left.compareTo(first) > 0 ? bounds.left : first.getToken().minKeyBound();
+             RowPosition rightBound = bounds.right.isMinimum() ? last.getToken().maxKeyBound() : bounds.right;
+-
++ 
++            // here it is adding the position of first row to end row But we have to put filter here 
++            // you can do anything you just set your mind
++            
+             if (leftBound.compareTo(last) > 0 || rightBound.compareTo(first) < 0)
+                 continue;
+-
++            // write Cassandra Guru's function here !!
++            
++            Range<Token> barala = new Range<>(first.getToken(), last.getToken());
++            Iterable<DecoratedKey> decoratedKeys =  getKeySamples(range);
++            System.out.println(decoratedKeys);
++            
++            for(DecoratedKey tempKey : decoratedKeys){
++            	System.out.println(getFirstPartitionKeyAsString(tempKey));
++            }
++            
++            if(!tenantId.isEmpty()){
++            	// write function to
++            	List <Pair<Long,Long>> allTargetPositions = new ArrayList<>();
++            	int barala1=0;
++            	for(DecoratedKey decoratedKey : allDecoratedKeys){
++            		// function which will return the positio
++            		barala1++;
++            		boolean temp = false;
++            		if((barala1==allDecoratedKeys.size())){
++            			temp=true;
++            		}
++            		System.out.println(getRowPositionForDecoratedKey(decoratedKey,temp));
++            		if(doesContainTenantId(decoratedKey)){
++            			allTargetPositions.add(getRowPositionForDecoratedKey(decoratedKey,temp));
++            		}
++            	}
++            	return allTargetPositions;
++            }
++            
+             long left = getPosition(leftBound, Operator.GT).position;
+             long right = (rightBound.compareTo(last) > 0)
+                          ? (openReason == OpenReason.EARLY
+@@ -1292,6 +1335,35 @@ public class SSTableReader extends SSTable implements RefCounted
+         return positions;
+     }
+ 
++    
++    public Pair<Long,Long> getRowPositionForDecoratedKey(DecoratedKey decoratedKey,boolean isLastKey){
++    	RowPosition leftBound = decoratedKey.getToken().minKeyBound();
++    	RowPosition rightBound = decoratedKey.getToken().maxKeyBound();
++    	long left = getPosition(leftBound, Operator.GT).position;
++    	long right = 0;
++    	if(isLastKey){
++    		right = uncompressedLength();
++    	}else{
++    		right = getPosition(decoratedKey, Operator.GT).position;
++    	}
++		assert left < right : String.format("Range=%s openReason=%s first=%s last=%s left=%d right=%d", "range", openReason, first, last, left, right);
++
++    	return Pair.create(left, right);
++    }
++    
++    private static boolean doesContainTenantId(DecoratedKey decoratedKey){
++    	return new String(decoratedKey.getKey().array()).contains(tenantId);
++    }
++    
++    // add one more function :- 
++    private static String getFirstPartitionKeyAsString(DecoratedKey decoratedKey)
++    {
++        // read fist component from key components
++        //ByteBuffer firstPkBf = ByteBufferUtil.readBytesWithShortLength(decoratedKey.getKey());
++        return new String(decoratedKey.getKey().array());
++    	//return UTF8Type.instance.getString(firstPkBf);
++    }
++    
+     public void invalidateCacheKey(DecoratedKey key)
+     {
+         KeyCacheKey cacheKey = new KeyCacheKey(metadata.cfId, descriptor, key.getKey());
+@@ -1892,7 +1964,11 @@ public class SSTableReader extends SSTable implements RefCounted
+         return refCounted.sharedRef();
+     }
+ 
+-    private static final class Tidier implements Tidy
++    public static List<DecoratedKey> getAlldecoratedkeys() {
++		return allDecoratedKeys;
++	}
++
++	private static final class Tidier implements Tidy
+     {
+         private String name;
+         private CFMetaData metadata;
+diff --git a/src/java/org/apache/cassandra/tools/BulkLoader.java b/src/java/org/apache/cassandra/tools/BulkLoader.java
+index f15c86d..ec5769a 100644
+--- a/src/java/org/apache/cassandra/tools/BulkLoader.java
++++ b/src/java/org/apache/cassandra/tools/BulkLoader.java
+@@ -58,7 +58,7 @@ public class BulkLoader
+     private static final String USER_OPTION = "username";
+     private static final String PASSWD_OPTION = "password";
+     private static final String THROTTLE_MBITS = "throttle";
+-
++    private static final boolean isTenantId = true;
+     private static final String TRANSPORT_FACTORY = "transport-factory";
+ 
+     /* client encryption options */
+diff --git a/src/java/org/apache/cassandra/utils/Pair.java b/src/java/org/apache/cassandra/utils/Pair.java
+index ea8b8fc..a14a9b8 100644
+--- a/src/java/org/apache/cassandra/utils/Pair.java
++++ b/src/java/org/apache/cassandra/utils/Pair.java
+@@ -24,7 +24,7 @@ public class Pair<T1, T2>
+     public final T1 left;
+     public final T2 right;
+ 
+-    protected Pair(T1 left, T2 right)
++    public Pair(T1 left, T2 right)
+     {
+         this.left = left;
+         this.right = right;
+-- 
+1.9.1
+
+
+From 23c559e33982799d4091a77f602cc25ed27d429b Mon Sep 17 00:00:00 2001
+From: Varun Barala <barala_v@worksap.co.jp>
+Date: Fri, 25 Mar 2016 13:43:56 +0800
+Subject: [PATCH 2/3] added '--tenantId -o' cmd options to pass tenantId
+
+---
+ .../apache/cassandra/io/sstable/SSTableLoader.java | 23 ++++++-----------
+ .../apache/cassandra/io/sstable/SSTableReader.java | 29 +++++-----------------
+ .../org/apache/cassandra/tools/BulkLoader.java     | 14 ++++++++---
+ 3 files changed, 24 insertions(+), 42 deletions(-)
+
+diff --git a/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java b/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java
+index 79440ef..64089c5 100644
+--- a/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java
++++ b/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java
+@@ -53,7 +53,7 @@ public class SSTableLoader implements StreamEventHandler
+     private final int connectionsPerHost;
+     private final OutputHandler outputHandler;
+     private final Set<InetAddress> failedHosts = new HashSet<>();
+-
++    private final String tenantId;
+     private final List<SSTableReader> sstables = new ArrayList<>();
+     private final Multimap<InetAddress, StreamSession.SSTableStreamingSections> streamingDetails = HashMultimap.create();
+ 
+@@ -64,16 +64,17 @@ public class SSTableLoader implements StreamEventHandler
+ 
+     public SSTableLoader(File directory, Client client, OutputHandler outputHandler)
+     {
+-        this(directory, client, outputHandler, 1);
++        this(directory, client, outputHandler, 1, ""); //empty string means no tenant Id 
+     }
+ 
+-    public SSTableLoader(File directory, Client client, OutputHandler outputHandler, int connectionsPerHost)
++    public SSTableLoader(File directory, Client client, OutputHandler outputHandler, int connectionsPerHost, String tenantId)
+     {
+         this.directory = directory;
+         this.keyspace = directory.getParentFile().getName();
+         this.client = client;
+         this.outputHandler = outputHandler;
+         this.connectionsPerHost = connectionsPerHost;
++        this.tenantId = tenantId;
+     }
+ 
+     protected Collection<SSTableReader> openSSTables(final Map<InetAddress, Collection<Range<Token>>> ranges)
+@@ -129,13 +130,7 @@ public class SSTableLoader implements StreamEventHandler
+                     {
+                         InetAddress endpoint = entry.getKey();
+                         Collection<Range<Token>> tokenRanges = entry.getValue();
+-                        System.out.println("Please replay!!");
+-                        List<Pair<Long, Long>> sstableSections = sstable.getPositionsForRanges(tokenRanges);
+-//                        sstableSections.clear();
+-//                        Long A = (long) 0;
+-//                        Long B = (long) 92;
+-//                        sstableSections.add(new Pair(A,B));
+-                        System.out.println(sstableSections);
++                        List<Pair<Long, Long>> sstableSections = sstable.getPositionsForRanges(tokenRanges,tenantId);
+                         long estimatedKeys = sstable.estimatedKeysForRanges(tokenRanges);
+                         Ref ref = sstable.tryRef();
+                         if (ref == null)
+@@ -166,16 +161,12 @@ public class SSTableLoader implements StreamEventHandler
+     {
+         client.init(keyspace);
+         outputHandler.output("Established connection to initial hosts");
+-        System.out.println("BBC");
+         StreamPlan plan = new StreamPlan("Bulk Load", 0, connectionsPerHost).connectionFactory(client.getConnectionFactory());
+ 
+         Map<InetAddress, Collection<Range<Token>>> endpointToRanges = client.getEndpointToRangesMap();
+-        for(Map.Entry<InetAddress, Collection<Range<Token>>> entry : endpointToRanges.entrySet()){
+-        		System.out.println(entry.getValue().size());
+-        		System.out.println(entry.getValue());
+-        }
++    
+         openSSTables(endpointToRanges);
+-        System.out.println("this above funtion opens the sstable -> from given directory path ");
++
+         if (sstables.isEmpty())
+         {
+             // return empty result
+diff --git a/src/java/org/apache/cassandra/io/sstable/SSTableReader.java b/src/java/org/apache/cassandra/io/sstable/SSTableReader.java
+index 6ed0803..4fde7a5 100644
+--- a/src/java/org/apache/cassandra/io/sstable/SSTableReader.java
++++ b/src/java/org/apache/cassandra/io/sstable/SSTableReader.java
+@@ -135,7 +135,6 @@ public class SSTableReader extends SSTable implements RefCounted
+     private static final ScheduledThreadPoolExecutor syncExecutor = new ScheduledThreadPoolExecutor(1);
+     private static final RateLimiter meterSyncThrottle = RateLimiter.create(100.0);
+     private static final List<DecoratedKey> allDecoratedKeys = new ArrayList<>();
+-    private static final String tenantId = "tenant6";
+     
+     public static final Comparator<SSTableReader> maxTimestampComparator = new Comparator<SSTableReader>()
+     {
+@@ -749,8 +748,9 @@ public class SSTableReader extends SSTable implements RefCounted
+                 if (first == null)
+                     first = decoratedKey;
+                 last = decoratedKey;
++                
+                 allDecoratedKeys.add(decoratedKey);
+-                System.out.println(allDecoratedKeys);
++
+                 if (recreateBloomFilter)
+                     bf.add(decoratedKey.getKey());
+ 
+@@ -1269,7 +1269,7 @@ public class SSTableReader extends SSTable implements RefCounted
+      * Determine the minimal set of sections that can be extracted from this SSTable to cover the given ranges.
+      * @return A sorted list of (offset,end) pairs that cover the given ranges in the datafile for this SSTable.
+      */
+-    public List<Pair<Long,Long>> getPositionsForRanges(Collection<Range<Token>> ranges) // this is fZor target node  
++    public List<Pair<Long,Long>> getPositionsForRanges(Collection<Range<Token>> ranges, String tenantId) // this is fZor target node  
+     {
+         // use the index to determine a minimal section for each range
+         List<Pair<Long,Long>> positions = new ArrayList<>(); // this is gonna be range part for current SSTable
+@@ -1283,20 +1283,12 @@ public class SSTableReader extends SSTable implements RefCounted
+             RowPosition rightBound = bounds.right.isMinimum() ? last.getToken().maxKeyBound() : bounds.right;
+  
+             // here it is adding the position of first row to end row But we have to put filter here 
+-            // you can do anything you just set your mind
++            // you can do anything you just set your mind to man ...
+             
+             if (leftBound.compareTo(last) > 0 || rightBound.compareTo(first) < 0)
+                 continue;
+             // write Cassandra Guru's function here !!
+             
+-            Range<Token> barala = new Range<>(first.getToken(), last.getToken());
+-            Iterable<DecoratedKey> decoratedKeys =  getKeySamples(range);
+-            System.out.println(decoratedKeys);
+-            
+-            for(DecoratedKey tempKey : decoratedKeys){
+-            	System.out.println(getFirstPartitionKeyAsString(tempKey));
+-            }
+-            
+             if(!tenantId.isEmpty()){
+             	// write function to
+             	List <Pair<Long,Long>> allTargetPositions = new ArrayList<>();
+@@ -1308,8 +1300,7 @@ public class SSTableReader extends SSTable implements RefCounted
+             		if((barala1==allDecoratedKeys.size())){
+             			temp=true;
+             		}
+-            		System.out.println(getRowPositionForDecoratedKey(decoratedKey,temp));
+-            		if(doesContainTenantId(decoratedKey)){
++            		if(doesContainTenantId(decoratedKey,tenantId)){
+             			allTargetPositions.add(getRowPositionForDecoratedKey(decoratedKey,temp));
+             		}
+             	}
+@@ -1351,18 +1342,10 @@ public class SSTableReader extends SSTable implements RefCounted
+     	return Pair.create(left, right);
+     }
+     
+-    private static boolean doesContainTenantId(DecoratedKey decoratedKey){
++    private static boolean doesContainTenantId(DecoratedKey decoratedKey,String tenantId){
+     	return new String(decoratedKey.getKey().array()).contains(tenantId);
+     }
+     
+-    // add one more function :- 
+-    private static String getFirstPartitionKeyAsString(DecoratedKey decoratedKey)
+-    {
+-        // read fist component from key components
+-        //ByteBuffer firstPkBf = ByteBufferUtil.readBytesWithShortLength(decoratedKey.getKey());
+-        return new String(decoratedKey.getKey().array());
+-    	//return UTF8Type.instance.getString(firstPkBf);
+-    }
+     
+     public void invalidateCacheKey(DecoratedKey key)
+     {
+diff --git a/src/java/org/apache/cassandra/tools/BulkLoader.java b/src/java/org/apache/cassandra/tools/BulkLoader.java
+index ec5769a..a6682e5 100644
+--- a/src/java/org/apache/cassandra/tools/BulkLoader.java
++++ b/src/java/org/apache/cassandra/tools/BulkLoader.java
+@@ -53,6 +53,7 @@ public class BulkLoader
+     private static final String HELP_OPTION  = "help";
+     private static final String NOPROGRESS_OPTION  = "no-progress";
+     private static final String IGNORE_NODES_OPTION  = "ignore";
++    private static final String TENANT_ID="tenantId";
+     private static final String INITIAL_HOST_ADDRESS_OPTION = "nodes";
+     private static final String RPC_PORT_OPTION = "port";
+     private static final String USER_OPTION = "username";
+@@ -89,7 +90,8 @@ public class BulkLoader
+                         options.sslStoragePort,
+                         options.serverEncOptions),
+                 handler,
+-                options.connectionsPerHost);
++                options.connectionsPerHost,
++                options.tenantId);
+         DatabaseDescriptor.setStreamThroughputOutboundMegabitsPerSec(options.throttle);
+         StreamResultFuture future = null;
+ 
+@@ -388,7 +390,8 @@ public class BulkLoader
+ 
+         public final Set<InetAddress> hosts = new HashSet<>();
+         public final Set<InetAddress> ignores = new HashSet<>();
+-
++        public String tenantId = null;
++ 
+         LoaderOptions(File directory)
+         {
+             this.directory = directory;
+@@ -445,7 +448,11 @@ public class BulkLoader
+ 
+                 if (cmd.hasOption(PASSWD_OPTION))
+                     opts.passwd = cmd.getOptionValue(PASSWD_OPTION);
+-
++                
++                if(cmd.hasOption(TENANT_ID)){
++                	opts.tenantId = cmd.getOptionValue(TENANT_ID);
++                }
++                
+                 if (cmd.hasOption(INITIAL_HOST_ADDRESS_OPTION))
+                 {
+                     String[] nodes = cmd.getOptionValue(INITIAL_HOST_ADDRESS_OPTION).split(",");
+@@ -648,6 +655,7 @@ public class BulkLoader
+             options.addOption("st", SSL_STORE_TYPE, "STORE-TYPE", "Client SSL: type of store");
+             options.addOption("ciphers", SSL_CIPHER_SUITES, "CIPHER-SUITES", "Client SSL: comma-separated list of encryption suites to use");
+             options.addOption("f", CONFIG_PATH, "path to config file", "cassandra.yaml file path for streaming throughput and client/server SSL.");
++            options.addOption("o", TENANT_ID, "tenant Id", "Data will be transfered for only this tenant Id");
+             return options;
+         }
+ 
+-- 
+1.9.1
+
+
+From 74febb9e2cf9cb29554ae85e759d63b2406c070d Mon Sep 17 00:00:00 2001
+From: Varun Barala <barala_v@worksap.co.jp>
+Date: Mon, 28 Mar 2016 15:10:04 +0800
+Subject: [PATCH 3/3] refactored and optimized
+
+---
+ .../apache/cassandra/io/sstable/SSTableLoader.java |  2 +-
+ .../apache/cassandra/io/sstable/SSTableReader.java | 83 +++++++++++-----------
+ .../org/apache/cassandra/tools/BulkLoader.java     |  4 +-
+ 3 files changed, 44 insertions(+), 45 deletions(-)
+
+diff --git a/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java b/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java
+index 64089c5..6db96b9 100644
+--- a/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java
++++ b/src/java/org/apache/cassandra/io/sstable/SSTableLoader.java
+@@ -121,7 +121,7 @@ public class SSTableLoader implements StreamEventHandler
+                     // To conserve memory, open SSTableReaders without bloom filters and discard
+                     // the index summary after calculating the file sections to stream and the estimated
+                     // number of keys for each endpoint. See CASSANDRA-5555 for details.
+-                    SSTableReader sstable = SSTableReader.openForBatch(desc, components, metadata, client.getPartitioner());
++                    SSTableReader sstable = SSTableReader.openForBatch(desc, components, metadata, client.getPartitioner(), tenantId);
+                     sstables.add(sstable);
+ 
+                     // calculate the sstable sections to stream as well as the estimated number of
+diff --git a/src/java/org/apache/cassandra/io/sstable/SSTableReader.java b/src/java/org/apache/cassandra/io/sstable/SSTableReader.java
+index 4fde7a5..8318ce2 100644
+--- a/src/java/org/apache/cassandra/io/sstable/SSTableReader.java
++++ b/src/java/org/apache/cassandra/io/sstable/SSTableReader.java
+@@ -17,6 +17,8 @@
+  */
+ package org.apache.cassandra.io.sstable;
+ 
++import static org.apache.cassandra.db.Directories.SECONDARY_INDEX_NAME_SEPARATOR;
++
+ import java.io.BufferedInputStream;
+ import java.io.DataInputStream;
+ import java.io.File;
+@@ -44,22 +46,6 @@ import java.util.concurrent.TimeUnit;
+ import java.util.concurrent.atomic.AtomicBoolean;
+ import java.util.concurrent.atomic.AtomicLong;
+ 
+-import com.google.common.annotations.VisibleForTesting;
+-import com.google.common.base.Predicate;
+-import com.google.common.collect.Iterators;
+-import com.google.common.collect.Ordering;
+-import com.google.common.primitives.Longs;
+-import com.google.common.util.concurrent.RateLimiter;
+-
+-import javafx.scene.control.IndexRange;
+-
+-import org.slf4j.Logger;
+-import org.slf4j.LoggerFactory;
+-
+-import com.clearspring.analytics.stream.cardinality.CardinalityMergeException;
+-import com.clearspring.analytics.stream.cardinality.HyperLogLogPlus;
+-import com.clearspring.analytics.stream.cardinality.ICardinality;
+-
+ import org.apache.cassandra.cache.CachingOptions;
+ import org.apache.cassandra.cache.InstrumentingCache;
+ import org.apache.cassandra.cache.KeyCacheKey;
+@@ -80,7 +66,6 @@ import org.apache.cassandra.db.RowPosition;
+ import org.apache.cassandra.db.SystemKeyspace;
+ import org.apache.cassandra.db.commitlog.ReplayPosition;
+ import org.apache.cassandra.db.index.SecondaryIndex;
+-import org.apache.cassandra.db.marshal.UTF8Type;
+ import org.apache.cassandra.dht.AbstractBounds;
+ import org.apache.cassandra.dht.IPartitioner;
+ import org.apache.cassandra.dht.LocalPartitioner;
+@@ -108,7 +93,6 @@ import org.apache.cassandra.metrics.StorageMetrics;
+ import org.apache.cassandra.service.ActiveRepairService;
+ import org.apache.cassandra.service.CacheService;
+ import org.apache.cassandra.service.StorageService;
+-import org.apache.cassandra.tools.BulkLoader;
+ import org.apache.cassandra.tracing.Tracing;
+ import org.apache.cassandra.utils.ByteBufferUtil;
+ import org.apache.cassandra.utils.CLibrary;
+@@ -120,9 +104,18 @@ import org.apache.cassandra.utils.Pair;
+ import org.apache.cassandra.utils.concurrent.OpOrder;
+ import org.apache.cassandra.utils.concurrent.Ref;
+ import org.apache.cassandra.utils.concurrent.RefCounted;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
+ 
+-import sun.misc.Perf.GetPerfAction;
+-import static org.apache.cassandra.db.Directories.SECONDARY_INDEX_NAME_SEPARATOR;
++import com.clearspring.analytics.stream.cardinality.CardinalityMergeException;
++import com.clearspring.analytics.stream.cardinality.HyperLogLogPlus;
++import com.clearspring.analytics.stream.cardinality.ICardinality;
++import com.google.common.annotations.VisibleForTesting;
++import com.google.common.base.Predicate;
++import com.google.common.collect.Iterators;
++import com.google.common.collect.Ordering;
++import com.google.common.primitives.Longs;
++import com.google.common.util.concurrent.RateLimiter;
+ 
+ /**
+  * SSTableReaders are open()ed by Keyspace.onStart; after that they are created by SSTableWriter.renameAndOpen.
+@@ -135,7 +128,8 @@ public class SSTableReader extends SSTable implements RefCounted
+     private static final ScheduledThreadPoolExecutor syncExecutor = new ScheduledThreadPoolExecutor(1);
+     private static final RateLimiter meterSyncThrottle = RateLimiter.create(100.0);
+     private static final List<DecoratedKey> allDecoratedKeys = new ArrayList<>();
+-    
++    private static final List<DecoratedKey> allDecoratedKeyForGivenTenant = new ArrayList<>();
++    private static String TenantId=""; // by default it's empty string that means no filteration
+     public static final Comparator<SSTableReader> maxTimestampComparator = new Comparator<SSTableReader>()
+     {
+         public int compare(SSTableReader o1, SSTableReader o2)
+@@ -366,8 +360,9 @@ public class SSTableReader extends SSTable implements RefCounted
+      * @return opened SSTableReader
+      * @throws IOException
+      */
+-    public static SSTableReader openForBatch(Descriptor descriptor, Set<Component> components, CFMetaData metadata, IPartitioner partitioner) throws IOException
++    public static SSTableReader openForBatch(Descriptor descriptor, Set<Component> components, CFMetaData metadata, IPartitioner partitioner, String tenantId) throws IOException
+     {
++    	TenantId=tenantId; // initialization of tenant_ID 
+         // Minimum components without which we can't do anything
+         assert components.contains(Component.DATA) : "Data component is missing for sstable" + descriptor;
+         assert components.contains(Component.PRIMARY_INDEX) : "Primary index component is missing for sstable " + descriptor;
+@@ -740,6 +735,7 @@ public class SSTableReader extends SSTable implements RefCounted
+ 
+             long indexPosition;
+             allDecoratedKeys.clear();
++            allDecoratedKeyForGivenTenant.clear();
+             while ((indexPosition = primaryIndex.getFilePointer()) != indexSize)
+             {
+                 ByteBuffer key = ByteBufferUtil.readWithShortLength(primaryIndex);
+@@ -748,9 +744,13 @@ public class SSTableReader extends SSTable implements RefCounted
+                 if (first == null)
+                     first = decoratedKey;
+                 last = decoratedKey;
++                 
++                allDecoratedKeys.add(decoratedKey); // this algorithm has complexity of O(N) where N=allDecoratedKeys
++                
++                if(doesContainTenantId(decoratedKey, TenantId)){
++                	allDecoratedKeyForGivenTenant.add(decoratedKey); // this algorithm has complexity of O(N) where N=DecoratedKey for a given tenant
++                }
+                 
+-                allDecoratedKeys.add(decoratedKey);
+-
+                 if (recreateBloomFilter)
+                     bf.add(decoratedKey.getKey());
+ 
+@@ -1281,28 +1281,23 @@ public class SSTableReader extends SSTable implements RefCounted
+             AbstractBounds<RowPosition> bounds = range.toRowBounds();
+             RowPosition leftBound = bounds.left.compareTo(first) > 0 ? bounds.left : first.getToken().minKeyBound();
+             RowPosition rightBound = bounds.right.isMinimum() ? last.getToken().maxKeyBound() : bounds.right;
+- 
+-            // here it is adding the position of first row to end row But we have to put filter here 
+-            // you can do anything you just set your mind to man ...
+             
+             if (leftBound.compareTo(last) > 0 || rightBound.compareTo(first) < 0)
+                 continue;
+-            // write Cassandra Guru's function here !!
+-            
++
++            /*
++             * Here we store row position of each row of given tenant
++             * and It will only work if some has passed the value of tenant Id other wise 'TenantId will be empty'   
++             */
+             if(!tenantId.isEmpty()){
+-            	// write function to
+             	List <Pair<Long,Long>> allTargetPositions = new ArrayList<>();
+-            	int barala1=0;
+-            	for(DecoratedKey decoratedKey : allDecoratedKeys){
+-            		// function which will return the positio
+-            		barala1++;
+-            		boolean temp = false;
+-            		if((barala1==allDecoratedKeys.size())){
+-            			temp=true;
+-            		}
+-            		if(doesContainTenantId(decoratedKey,tenantId)){
+-            			allTargetPositions.add(getRowPositionForDecoratedKey(decoratedKey,temp));
++            	for(DecoratedKey decoratedKey : allDecoratedKeyForGivenTenant){
++            		boolean isLastDecoratedKey = false;
++            		// this condition is to check if decorated key is last key or not Because there is different way to calculate row position for last decorated key 
++            		if(decoratedKey.equals(last)){
++            			isLastDecoratedKey=true;
+             		}
++            		allTargetPositions.add(getRowPositionForDecoratedKey(decoratedKey, isLastDecoratedKey));
+             	}
+             	return allTargetPositions;
+             }
+@@ -1327,21 +1322,23 @@ public class SSTableReader extends SSTable implements RefCounted
+     }
+ 
+     
++    // This function calculates the row position for given decorated key
+     public Pair<Long,Long> getRowPositionForDecoratedKey(DecoratedKey decoratedKey,boolean isLastKey){
+     	RowPosition leftBound = decoratedKey.getToken().minKeyBound();
+     	RowPosition rightBound = decoratedKey.getToken().maxKeyBound();
+     	long left = getPosition(leftBound, Operator.GT).position;
+     	long right = 0;
+     	if(isLastKey){
+-    		right = uncompressedLength();
++    		right = uncompressedLength(); // for last decorated key we calculate row position in this way 
+     	}else{
+-    		right = getPosition(decoratedKey, Operator.GT).position;
++    		right = getPosition(rightBound, Operator.GT).position;
+     	}
+-		assert left < right : String.format("Range=%s openReason=%s first=%s last=%s left=%d right=%d", "range", openReason, first, last, left, right);
++		assert left < right : String.format("openReason=%s first=%s last=%s left=%d right=%d", openReason, first, last, left, right);
+ 
+     	return Pair.create(left, right);
+     }
+     
++    // to check given decorated key has tenant id or not
+     private static boolean doesContainTenantId(DecoratedKey decoratedKey,String tenantId){
+     	return new String(decoratedKey.getKey().array()).contains(tenantId);
+     }
+diff --git a/src/java/org/apache/cassandra/tools/BulkLoader.java b/src/java/org/apache/cassandra/tools/BulkLoader.java
+index a6682e5..4f7792c 100644
+--- a/src/java/org/apache/cassandra/tools/BulkLoader.java
++++ b/src/java/org/apache/cassandra/tools/BulkLoader.java
+@@ -59,7 +59,6 @@ public class BulkLoader
+     private static final String USER_OPTION = "username";
+     private static final String PASSWD_OPTION = "password";
+     private static final String THROTTLE_MBITS = "throttle";
+-    private static final boolean isTenantId = true;
+     private static final String TRANSPORT_FACTORY = "transport-factory";
+ 
+     /* client encryption options */
+@@ -452,6 +451,9 @@ public class BulkLoader
+                 if(cmd.hasOption(TENANT_ID)){
+                 	opts.tenantId = cmd.getOptionValue(TENANT_ID);
+                 }
++                if(!cmd.hasOption(TENANT_ID)){
++                	opts.tenantId="";
++                }
+                 
+                 if (cmd.hasOption(INITIAL_HOST_ADDRESS_OPTION))
+                 {
+-- 
+1.9.1
+

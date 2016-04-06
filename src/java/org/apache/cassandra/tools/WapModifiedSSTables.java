@@ -42,6 +42,8 @@ import org.apache.cassandra.utils.JVMStabilityInspector;
 import org.codehaus.jackson.JsonGenerator;
 import org.codehaus.jackson.map.ObjectMapper;
 
+import com.sun.xml.internal.fastinfoset.util.ContiguousCharArrayArray;
+
 /**
  * @author barala
  * To Generate Modified SSTables
@@ -59,8 +61,9 @@ public class WapModifiedSSTables
     private static final String JSON_FILE_PATH = "/tmp/TempJsonFile.txt";
     private static final Options options = new Options();
     private static CommandLine cmd;
-    static Integer keyCountToImport = null;
-    static boolean isSorted = false;
+    static Integer keyCountToImport = 0;
+    static boolean isSorted = true;
+    
     static
     {
         Option optKey = new Option(KEY_OPTION, true, "Row key");
@@ -361,6 +364,7 @@ public class WapModifiedSSTables
                 checkStream(outs);
 
                 i++;
+                keyCountToImport++;
             }
 
             outs.println("\n]");
@@ -437,7 +441,7 @@ public class WapModifiedSSTables
 			file.delete();
 		}
     	if(file.createNewFile()){
-			System.out.println("new wfile has been created");
+			System.out.println("new file has been created");
 		}
     	
     	String usage = String.format("Usage: %s <sstable> [-k key [-k key [...]] -x key [-x key [...]]]%n", SSTableExport.class.getName());
@@ -530,8 +534,12 @@ public class WapModifiedSSTables
         }
         try
         {
-          int importedKeys = new SSTableImport(keyCountToImport, isSorted).importJson(JSON_FILE_PATH, keyspace.getName(), baseName, SSTablePath);
-          System.err.println("Successfully " + importedKeys + " keys imported");
+          if(keyCountToImport==0){
+        	  System.err.println("There is no data to create SSTables: Skipping");
+          }else{
+              int importedKeys = new SSTableImport(keyCountToImport, isSorted).importJson(JSON_FILE_PATH, keyspace.getName(), baseName, SSTablePath);
+              System.err.println("Successfully " + importedKeys + " keys imported");
+          }
         }
         catch (Exception e)
         {

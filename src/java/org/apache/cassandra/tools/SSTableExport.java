@@ -53,6 +53,7 @@ import org.apache.cassandra.db.composites.CellNameType;
 import org.apache.cassandra.db.composites.Composite;
 import org.apache.cassandra.db.composites.Composites;
 import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.db.marshal.BytesType;
 import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.exceptions.ConfigurationException;
@@ -91,7 +92,7 @@ public class SSTableExport
     private static final Options options = new Options();
     private static CommandLine cmd;
     private static List<Object> allColumnsForGivenRow = new ArrayList<Object>();
-    
+    private static Object decoratedKey;
     static
     {
         Option optKey = new Option(KEY_OPTION, true, "Row key");
@@ -247,6 +248,7 @@ public class SSTableExport
     
     private static void serializeRow(DeletionInfo deletionInfo, Iterator<OnDiskAtom> atoms, CFMetaData metadata, DecoratedKey key, PrintStream out)
     {
+    	decoratedKey = metadata.getKeyValidator().getString(key.getKey()).replaceAll("tenant1", "tenant1Staging");
         out.print("{");
         writeKey(out, "key");
         writeJSON(out, metadata.getKeyValidator().getString(key.getKey()));
@@ -468,10 +470,37 @@ public class SSTableExport
 		// add column function here
 		//addColumns(); this function will deserialize each column and add that column to 
     	// copy that function here
+    	writer.append(modifyDecoratedKey(row), row.getColumnFamily());
     	addColumnsToCF((List<?>) allColumnsForGivenRow, row.getColumnFamily());
-    	writer.append(row.getKey(), row.getColumnFamily());
+    	
 	}
 
+    /**
+     * @param decorated key
+     * @return modified decorated key
+     */
+    private static DecoratedKey modifyDecoratedKey(SSTableIdentityIterator row){
+    	IPartitioner partitioner = DatabaseDescriptor.getPartitioner();
+    	Object key = new String(row.getKey().getKey().array()).replaceAll("tenant1", "tenant1");
+    	System.out.println(key);
+    	return partitioner.decorateKey(getKeyValidator(row.getColumnFamily()).fromString((String) decoratedKey));
+    }
+    
+    
+    /**
+     * Get key validator for column family
+     * @param columnFamily column family instance
+     * @return key validator for given column family
+     */
+    private static AbstractType<?> getKeyValidator(ColumnFamily columnFamily) {
+        // this is a fix to support backward compatibility
+        // which allows to skip the current key validator
+        // please, take a look onto CASSANDRA-7498 for more details
+        if ("true".equals(System.getProperty("skip.key.validator", "false"))) {
+            return BytesType.instance;
+        }
+        return columnFamily.metadata().getKeyValidator();
+    }
     
     /**
      * Add columns to a column family.

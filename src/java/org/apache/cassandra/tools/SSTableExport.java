@@ -20,21 +20,58 @@ package org.apache.cassandra.tools;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.util.*;
-
-import org.apache.commons.cli.*;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Set;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
 import org.apache.cassandra.config.Schema;
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.ArrayBackedSortedColumns;
+import org.apache.cassandra.db.BufferCounterCell;
+import org.apache.cassandra.db.BufferExpiringCell;
+import org.apache.cassandra.db.Cell;
+import org.apache.cassandra.db.ColumnFamily;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.CounterCell;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.DeletedCell;
+import org.apache.cassandra.db.DeletionInfo;
+import org.apache.cassandra.db.DeletionTime;
+import org.apache.cassandra.db.ExpiringCell;
+import org.apache.cassandra.db.Keyspace;
+import org.apache.cassandra.db.OnDiskAtom;
+import org.apache.cassandra.db.RangeTombstone;
+import org.apache.cassandra.db.RowIndexEntry;
+import org.apache.cassandra.db.composites.CellName;
 import org.apache.cassandra.db.composites.CellNameType;
+import org.apache.cassandra.db.composites.Composite;
+import org.apache.cassandra.db.composites.Composites;
 import org.apache.cassandra.db.marshal.AbstractType;
+import org.apache.cassandra.db.marshal.UTF8Type;
 import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.exceptions.ConfigurationException;
-import org.apache.cassandra.io.sstable.*;
+import org.apache.cassandra.io.sstable.Descriptor;
+import org.apache.cassandra.io.sstable.ISSTableScanner;
+import org.apache.cassandra.io.sstable.KeyIterator;
+import org.apache.cassandra.io.sstable.SSTableIdentityIterator;
+import org.apache.cassandra.io.sstable.SSTableReader;
+import org.apache.cassandra.io.sstable.SSTableWriter;
 import org.apache.cassandra.io.util.RandomAccessReader;
+import org.apache.cassandra.serializers.MarshalException;
+import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.ByteBufferUtil;
+import org.apache.commons.cli.CommandLine;
+import org.apache.commons.cli.CommandLineParser;
+import org.apache.commons.cli.Option;
+import org.apache.commons.cli.Options;
+import org.apache.commons.cli.ParseException;
+import org.apache.commons.cli.PosixParser;
 import org.codehaus.jackson.JsonGenerator;
 import org.codehaus.jackson.map.ObjectMapper;
 
@@ -48,10 +85,13 @@ public class SSTableExport
     private static final String KEY_OPTION = "k";
     private static final String EXCLUDEKEY_OPTION = "x";
     private static final String ENUMERATEKEYS_OPTION = "e";
-
+    private static boolean isSorted=false;
+    private static Integer keyCountToImport = 0;
+    private static String ssTablePath = "/home/barala/data/data/sstableloadertest/typestest-f36ad9d0f4a711e5807e55bc51b0510e/sstableloadertest-typestest-ka-100-Data.db"; 
     private static final Options options = new Options();
     private static CommandLine cmd;
-
+    private static List<Object> allColumnsForGivenRow = new ArrayList<Object>();
+    
     static
     {
         Option optKey = new Option(KEY_OPTION, true, "Row key");
@@ -181,6 +221,30 @@ public class SSTableExport
         serializeRow(row.getColumnFamily().deletionInfo(), row, row.getColumnFamily().metadata(), key, out);
     }
 
+    /**
+     * to create modified sstable from current sstable
+     */
+    private static void createSSTable(String keyspace, String cf, String ssTablePath, SSTableIdentityIterator row){
+    	 if (Schema.instance.getCFMetaData(keyspace, cf) == null)
+             throw new IllegalArgumentException(String.format("Unknown keyspace/table %s.%s",
+                                                              keyspace,
+                                                              cf));
+
+         ColumnFamily columnFamily = ArrayBackedSortedColumns.factory.create(keyspace, cf);
+         IPartitioner partitioner = DatabaseDescriptor.getPartitioner();
+         
+     //    int importedKeys = (isSorted) ? importSorted(row, columnFamily, ssTablePath, partitioner)
+     //            : importUnsorted(row, columnFamily, ssTablePath, partitioner);
+
+       //  if (importedKeys != -1)
+        //	 System.out.printf("%d keys imported successfully.%n", importedKeys);
+    }
+    
+    
+    // You will initialize once so you won't call it again and again 
+    // write inside the main logic
+    
+    
     private static void serializeRow(DeletionInfo deletionInfo, Iterator<OnDiskAtom> atoms, CFMetaData metadata, DecoratedKey key, PrintStream out)
     {
         out.print("{");
@@ -202,10 +266,11 @@ public class SSTableExport
         out.print(" ");
         writeKey(out, "cells");
         out.print("[");
+        allColumnsForGivenRow.clear();
         while (atoms.hasNext())
         {
-            writeJSON(out, serializeAtom(atoms.next(), metadata));
-
+            //writeJSON(out, serializeAtom(atoms.next(), metadata));
+        	allColumnsForGivenRow.add(serializeAtom(atoms.next(), metadata));
             if (atoms.hasNext())
                 out.print(",\n           ");
         }
@@ -329,18 +394,39 @@ public class SSTableExport
             int i = 0;
 
             // collecting keys to export
+            
+            // create sstable writer here
+            SSTableWriter writer = new SSTableWriter(ssTablePath, keyCountToImport, ActiveRepairService.UNREPAIRED_SSTABLE);
+            IPartitioner partitioner = DatabaseDescriptor.getPartitioner();
+            
+            // write a function which will take two argument:- one row and one writer
+            // this above function will need one more argument to 
+            
+//            SortedMap<DecoratedKey,Map<?, ?>> decoratedKeys = new TreeMap<DecoratedKey,Map<?, ?>>(); // I can create this during readin the sstable //
+
+            
+            // here it puts all the rows in sstable
+//            for (Object row : data)
+//            {
+//                Map<?,?> rowAsMap = (Map<?, ?>)row;
+//                decoratedKeys.put(partitioner.decorateKey(getKeyValidator(columnFamily).fromString((String) rowAsMap.get("key"))), rowAsMap); // this function is useful to generate modified decorated key
+//                // this function creates modified decoratedKey and store them 
+//            }
+//            
+            
             while (scanner.hasNext())
             {
                 row = (SSTableIdentityIterator) scanner.next();
-
+                
                 String currentKey = row.getColumnFamily().metadata().getKeyValidator().getString(row.getKey().getKey());
 
-                if (excludeSet.contains(currentKey))
+                if (excludeSet.contains(currentKey) || !doesContainsTargetKey("tenant1", row.getKey()))
                     continue;
                 else if (i != 0)
                     outs.println(",");
 
                 serializeRow(row, row.getKey(), outs);
+                insertCurrentRowInSSTable(writer,row);
                 checkStream(outs);
 
                 i++;
@@ -348,6 +434,7 @@ public class SSTableExport
 
             outs.println("\n]");
             outs.flush();
+            writer.closeAndOpenReader();
         }
         finally
         {
@@ -356,6 +443,208 @@ public class SSTableExport
     }
 
     /**
+     * 
+     */
+    public static boolean doesContainsTargetKey(String tenantId, DecoratedKey decoratedKey){
+    	return firskPk(decoratedKey).equals(tenantId);
+    }
+    
+    
+    /**
+     * To get the first partition key as a string
+     * @param Decoratedkey
+     * @return first partition key as a string  
+     */
+    public static String firskPk(DecoratedKey decoratedKey){
+    	 ByteBuffer firstPkBf = ByteBufferUtil.readBytesWithShortLength(decoratedKey.getKey().duplicate());
+         return UTF8Type.instance.getString(firstPkBf);
+    }
+    
+    
+    private static void insertCurrentRowInSSTable(SSTableWriter writer, SSTableIdentityIterator row) {
+		
+		// create row to abstarct row ?
+		//modify key here and 
+		// add column function here
+		//addColumns(); this function will deserialize each column and add that column to 
+    	// copy that function here
+    	addColumnsToCF((List<?>) allColumnsForGivenRow, row.getColumnFamily());
+    	writer.append(row.getKey(), row.getColumnFamily());
+	}
+
+    
+    /**
+     * Add columns to a column family.
+     *
+     * @param row the columns associated with a row
+     * @param cfamily the column family to add columns to
+     */
+    private static void addColumnsToCF(List<?> row, ColumnFamily cfamily)
+    {
+        CFMetaData cfm = cfamily.metadata();
+        assert cfm != null;
+
+        // basically row is here-> each row corresponding to each columnn so Each Real will have row + one for decorated key
+        for (Object c : row)
+        {
+            JsonColumn col = new JsonColumn<List>((List) c, cfm);
+            if (col.isRangeTombstone())
+            {
+                Composite start = cfm.comparator.fromByteBuffer(col.getName());
+                Composite end = cfm.comparator.fromByteBuffer(col.getValue());
+                cfamily.addAtom(new RangeTombstone(start, end, col.timestamp, col.localExpirationTime));
+                continue;
+            }
+            
+            assert cfm.isCQL3Table() || col.getName().hasRemaining() : "Cell name should not be empty";
+            CellName cname = col.getName().hasRemaining() ? cfm.comparator.cellFromByteBuffer(col.getName()) 
+                    : cfm.comparator.rowMarker(Composites.EMPTY);
+
+            if (col.isExpiring())
+            {
+                cfamily.addColumn(new BufferExpiringCell(cname, col.getValue(), col.timestamp, col.ttl, col.localExpirationTime));
+            }
+            else if (col.isCounter())
+            {
+                cfamily.addColumn(new BufferCounterCell(cname, col.getValue(), col.timestamp, col.timestampOfLastDelete));
+            }
+            else if (col.isDeleted())
+            {
+                cfamily.addTombstone(cname, col.getValue(), col.timestamp);
+            }
+            else if (col.isRangeTombstone())
+            {
+                CellName end = cfm.comparator.cellFromByteBuffer(col.getValue());
+                cfamily.addAtom(new RangeTombstone(cname, end, col.timestamp, col.localExpirationTime));
+            }
+            // cql3 row marker, see CASSANDRA-5852
+            else if (cname.isEmpty())
+            {
+                cfamily.addColumn(cfm.comparator.rowMarker(Composites.EMPTY), col.getValue(), col.timestamp);
+            }
+            else
+            {
+                cfamily.addColumn(cname, col.getValue(), col.timestamp);
+            }
+        }
+    }
+    
+    
+    private static class JsonColumn<T>
+    {
+        private ByteBuffer name;
+        private ByteBuffer value;
+        private long timestamp;
+
+        private String kind;
+        // Expiring columns
+        private int ttl;
+        private int localExpirationTime;
+
+        // Counter columns
+        private long timestampOfLastDelete;
+
+        public JsonColumn(T json, CFMetaData meta)
+        {
+            if (json instanceof List)
+            {
+                CellNameType comparator = meta.comparator;
+                List fields = (List<?>) json;
+
+                assert fields.size() >= 3 : "Cell definition should have at least 3";
+
+                name  = stringAsType((String) fields.get(0), comparator.asAbstractType());
+                timestamp = (Long) fields.get(2);
+                kind = "";
+
+                if (fields.size() > 3)
+                {
+                    kind = (String) fields.get(3);
+                    if (isExpiring())
+                    {
+                        ttl = (Integer) fields.get(4);
+                        localExpirationTime = (Integer) fields.get(5);
+                    }
+                    else if (isCounter())
+                    {
+                        timestampOfLastDelete = (long) ((Integer) fields.get(4));
+                    }
+                    else if (isRangeTombstone())
+                    {
+                        localExpirationTime = (Integer) fields.get(4);
+                    }
+                }
+
+                if (isDeleted())
+                {
+                    value = ByteBufferUtil.bytes((Integer) fields.get(1));
+                }
+                else if (isRangeTombstone())
+                {
+                    value = stringAsType((String) fields.get(1), comparator.asAbstractType());
+                }
+                else
+                {
+                    assert meta.isCQL3Table() || name.hasRemaining() : "Cell name should not be empty";
+                    value = stringAsType((String) fields.get(1), 
+                            meta.getValueValidator(name.hasRemaining() 
+                                    ? comparator.cellFromByteBuffer(name)
+                                    : meta.comparator.rowMarker(Composites.EMPTY)));
+                }
+            }
+        }
+
+        public boolean isDeleted()
+        {
+            return kind.equals("d");
+        }
+
+        public boolean isExpiring()
+        {
+            return kind.equals("e");
+        }
+
+        public boolean isCounter()
+        {
+            return kind.equals("c");
+        }
+
+        public boolean isRangeTombstone()
+        {
+            return kind.equals("t");
+        }
+
+        public ByteBuffer getName()
+        {
+            return name.duplicate();
+        }
+
+        public ByteBuffer getValue()
+        {
+            return value.duplicate();
+        }
+    }
+    
+    /**
+     * Convert a string to bytes (ByteBuffer) according to type
+     * @param content string to convert
+     * @param type type to use for conversion
+     * @return byte buffer representation of the given string
+     */
+    private static ByteBuffer stringAsType(String content, AbstractType<?> type)
+    {
+        try
+        {
+            return type.fromString(content);
+        }
+        catch (MarshalException e)
+        {
+            throw new RuntimeException(e.getMessage());
+        }
+    }
+    
+    
+	/**
      * Export an SSTable and write the resulting JSON to a PrintStream.
      *
      * @param desc     the descriptor of the sstable to read from

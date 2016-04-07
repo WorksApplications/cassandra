@@ -62,7 +62,7 @@ public class WapModifiedSSTables
     private static final Options options = new Options();
     private static CommandLine cmd;
     static Integer keyCountToImport = 0;
-    static boolean isSorted = true;
+    static boolean isSorted = false;
     
     static
     {

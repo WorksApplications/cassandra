@@ -27,7 +27,10 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.SortedMap;
+import java.util.TreeMap;
 
 import org.apache.cassandra.config.CFMetaData;
 import org.apache.cassandra.config.DatabaseDescriptor;
@@ -88,11 +91,12 @@ public class SSTableExport
     private static final String ENUMERATEKEYS_OPTION = "e";
     private static boolean isSorted=false;
     private static Integer keyCountToImport = 0;
-    private static String ssTablePath = "/home/barala/data/data/sstableloadertest/typestest-f36ad9d0f4a711e5807e55bc51b0510e/sstableloadertest-typestest-ka-100-Data.db"; 
+    private static String ssTablePath = "/home/barala/sourceCode/WAP/cassandra/modifiedData/data/deleteinfotest/table1-e78d6c42fc9511e5b7b455bc51b0510e/deleteinfotest-table1-ka-10-Data.db"; 
     private static final Options options = new Options();
     private static CommandLine cmd;
     private static List<Object> allColumnsForGivenRow = new ArrayList<Object>();
     private static Object decoratedKey;
+    private static SortedMap<DecoratedKey,List<Object>> allSortedModifiedRow = new TreeMap<DecoratedKey,List<Object>>();
     static
     {
         Option optKey = new Option(KEY_OPTION, true, "Row key");
@@ -398,8 +402,7 @@ public class SSTableExport
             // collecting keys to export
             
             // create sstable writer here
-            SSTableWriter writer = new SSTableWriter(ssTablePath, keyCountToImport, ActiveRepairService.UNREPAIRED_SSTABLE);
-            IPartitioner partitioner = DatabaseDescriptor.getPartitioner();
+            
             
             // write a function which will take two argument:- one row and one writer
             // this above function will need one more argument to 
@@ -428,15 +431,15 @@ public class SSTableExport
                     outs.println(",");
 
                 serializeRow(row, row.getKey(), outs);
-                insertCurrentRowInSSTable(writer,row);
+                insertCurrentRowInSSTable(row);
                 checkStream(outs);
-
+                keyCountToImport++;
                 i++;
             }
 
             outs.println("\n]");
             outs.flush();
-            writer.closeAndOpenReader();
+            //writer.closeAndOpenReader();
         }
         finally
         {
@@ -463,15 +466,16 @@ public class SSTableExport
     }
     
     
-    private static void insertCurrentRowInSSTable(SSTableWriter writer, SSTableIdentityIterator row) {
+    private static void insertCurrentRowInSSTable(SSTableIdentityIterator row) {
 		
 		// create row to abstarct row ?
 		//modify key here and 
 		// add column function here
 		//addColumns(); this function will deserialize each column and add that column to 
     	// copy that function here
-    	writer.append(modifyDecoratedKey(row), row.getColumnFamily());
-    	addColumnsToCF((List<?>) allColumnsForGivenRow, row.getColumnFamily());
+    	allSortedModifiedRow.put(modifyDecoratedKey(row), allColumnsForGivenRow);
+    	//writer.append(modifyDecoratedKey(row), row.getColumnFamily());
+    	//addColumnsToCF((List<?>) allColumnsForGivenRow, row.getColumnFamily());
     	
 	}
 
@@ -481,8 +485,6 @@ public class SSTableExport
      */
     private static DecoratedKey modifyDecoratedKey(SSTableIdentityIterator row){
     	IPartitioner partitioner = DatabaseDescriptor.getPartitioner();
-    	Object key = new String(row.getKey().getKey().array()).replaceAll("tenant1", "tenant1");
-    	System.out.println(key);
     	return partitioner.decorateKey(getKeyValidator(row.getColumnFamily()).fromString((String) decoratedKey));
     }
     
@@ -790,6 +792,17 @@ public class SSTableExport
             e.printStackTrace(System.err);
         }
 
+        //write all sorted rows in to sstable
+        SSTableWriter writer = new SSTableWriter(ssTablePath, keyCountToImport, ActiveRepairService.UNREPAIRED_SSTABLE);
+        // Map.Entry<DecoratedKey, Map<?, ?>> row : decoratedKeys.entrySet()
+        ColumnFamily cfamily = ArrayBackedSortedColumns.factory.create(keyspace.getName(), cfStore.getColumnFamilyName());
+        for(Map.Entry<DecoratedKey, List<Object>> row : allSortedModifiedRow.entrySet()){
+        	addColumnsToCF(row.getValue(), cfamily);
+        	writer.append(row.getKey(), cfamily);
+        	cfamily.clear();
+        }
+        writer.closeAndOpenReader();
+        System.err.println("where it's printing");
         System.exit(0);
     }
 

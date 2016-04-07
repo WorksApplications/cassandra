@@ -545,12 +545,12 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
                                                      "Use cassandra.replace_address if you want to replace this node.",
                                                      FBUtilities.getBroadcastAddress()));
         }
-        if (RangeStreamer.useStrictConsistency)
+        if (RangeStreamer.useStrictConsistency && !allowSimultaneousMoves())
         {
             for (Map.Entry<InetAddress, EndpointState> entry : Gossiper.instance.getEndpointStates())
             {
 
-                if (entry.getValue().getApplicationState(ApplicationState.STATUS) == null)
+                if (entry.getKey().equals(FBUtilities.getBroadcastAddress()) || entry.getValue().getApplicationState(ApplicationState.STATUS) == null)
                         continue;
                 String[] pieces = entry.getValue().getApplicationState(ApplicationState.STATUS).value.split(VersionedValue.DELIMITER_STR, -1);
                 assert (pieces.length > 0);
@@ -560,6 +560,11 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
             }
         }
         Gossiper.instance.resetEndpointStateMap();
+    }
+
+    private boolean allowSimultaneousMoves()
+    {
+        return RangeStreamer.allowSimultaneousMoves && DatabaseDescriptor.getNumTokens() == 1;
     }
 
     public synchronized void initClient() throws ConfigurationException
@@ -1033,7 +1038,7 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     public boolean isJoined()
     {
-        return joined && !isSurveyMode;
+        return tokenMetadata.isMember(FBUtilities.getBroadcastAddress());
     }
 
     public void rebuild(String sourceDc)
@@ -1087,6 +1092,18 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
     {
         return DatabaseDescriptor.getStreamThroughputOutboundMegabitsPerSec();
     }
+
+    public void setInterDCStreamThroughputMbPerSec(int value)
+    {
+        DatabaseDescriptor.setInterDCStreamThroughputOutboundMegabitsPerSec(value);
+        logger.info("setinterdcstreamthroughput: throttle set to {}", value);
+    }
+
+    public int getInterDCStreamThroughputMbPerSec()
+    {
+        return DatabaseDescriptor.getInterDCStreamThroughputOutboundMegabitsPerSec();
+    }
+
 
     public int getCompactionThroughputMbPerSec()
     {
@@ -4004,28 +4021,32 @@ public class StorageService extends NotificationBroadcasterSupport implements IE
 
     	if (keyspace != null)
     	{
-    		Keyspace keyspaceInstance = Schema.instance.getKeyspaceInstance(keyspace);
-			if(keyspaceInstance == null)
-				throw new IllegalArgumentException("The keyspace " + keyspace + ", does not exist");
+            Keyspace keyspaceInstance = Schema.instance.getKeyspaceInstance(keyspace);
+            if(keyspaceInstance == null)
+                throw new IllegalArgumentException("The keyspace " + keyspace + ", does not exist");
 
-    		if(keyspaceInstance.getReplicationStrategy() instanceof LocalStrategy)
-				throw new IllegalStateException("Ownership values for keyspaces with LocalStrategy are meaningless");
+            if(keyspaceInstance.getReplicationStrategy() instanceof LocalStrategy)
+                throw new IllegalStateException("Ownership values for keyspaces with LocalStrategy are meaningless");
     	}
     	else
     	{
-        	List<String> nonSystemKeyspaces = Schema.instance.getNonSystemKeyspaces();
+            List<String> nonSystemKeyspaces = Schema.instance.getNonSystemKeyspaces();
 
-        	//system_traces is a non-system keyspace however it needs to be counted as one for this process
-        	int specialTableCount = 0;
-        	if (nonSystemKeyspaces.contains("system_traces"))
-			{
-        		specialTableCount += 1;
-			}
-        	if (nonSystemKeyspaces.size() > specialTableCount)
-        		throw new IllegalStateException("Non-system keyspaces don't have the same replication settings, effective ownership information is meaningless");
+            //system_traces is a non-system keyspace however it needs to be counted as one for this process
+            int specialTableCount = 0;
+            if (nonSystemKeyspaces.contains("system_traces"))
+            {
+                specialTableCount += 1;
+            }
+            if (nonSystemKeyspaces.size() > specialTableCount)
+                throw new IllegalStateException("Non-system keyspaces don't have the same replication settings, effective ownership information is meaningless");
 
-        	keyspace = "system_traces";
-    	}
+            keyspace = "system_traces";
+
+            Keyspace keyspaceInstance = Schema.instance.getKeyspaceInstance(keyspace);
+            if(keyspaceInstance == null)
+                throw new IllegalArgumentException("The node does not have " + keyspace + " yet, probably still bootstrapping");
+        }
 
         TokenMetadata metadata = tokenMetadata.cloneOnlyTokenMap();
 

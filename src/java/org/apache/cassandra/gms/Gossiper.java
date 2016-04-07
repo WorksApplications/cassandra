@@ -87,8 +87,8 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
 
     public static final long aVeryLongTime = 259200 * 1000; // 3 days
 
-    /** Maximimum difference in generation and version values we are willing to accept about a peer */
-    private static final long MAX_GENERATION_DIFFERENCE = 86400 * 365;
+    // Maximimum difference between generation value and local time we are willing to accept about a peer
+    static final int MAX_GENERATION_DIFFERENCE = 86400 * 365;
     private long FatClientTimeout;
     private final Random random = new Random();
     private final Comparator<InetAddress> inetcomparator = new Comparator<InetAddress>()
@@ -122,7 +122,7 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
 
     private final Map<InetAddress, Long> expireTimeEndpointMap = new ConcurrentHashMap<InetAddress, Long>();
 
-    private boolean inShadowRound = false;
+    private volatile boolean inShadowRound = false;
 
     private volatile long lastProcessedMessageAt = System.currentTimeMillis();
 
@@ -1107,13 +1107,15 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
             {
                 int localGeneration = localEpStatePtr.getHeartBeatState().getGeneration();
                 int remoteGeneration = remoteState.getHeartBeatState().getGeneration();
+                long localTime = System.currentTimeMillis()/1000;
                 if (logger.isTraceEnabled())
                     logger.trace(ep + "local generation " + localGeneration + ", remote generation " + remoteGeneration);
 
-                if (localGeneration != 0 && remoteGeneration > localGeneration + MAX_GENERATION_DIFFERENCE)
+                // We measure generation drift against local time, based on the fact that generation is initialized by time
+                if (remoteGeneration > localTime + MAX_GENERATION_DIFFERENCE)
                 {
                     // assume some peer has corrupted memory and is broadcasting an unbelievable generation about another peer (or itself)
-                    logger.warn("received an invalid gossip generation for peer {}; local generation = {}, received generation = {}", ep, localGeneration, remoteGeneration);
+                    logger.warn("received an invalid gossip generation for peer {}; local time = {}, received generation = {}", ep, localTime, remoteGeneration);
                 }
                 else if (remoteGeneration > localGeneration)
                 {
@@ -1321,17 +1323,24 @@ public class Gossiper implements IFailureDetectionEventListener, GossiperMBean
         MessageOut<GossipDigestSyn> message = new MessageOut<GossipDigestSyn>(MessagingService.Verb.GOSSIP_DIGEST_SYN,
                 digestSynMessage,
                 GossipDigestSyn.serializer);
+
         inShadowRound = true;
-        for (InetAddress seed : seeds)
-            MessagingService.instance().sendOneWay(message, seed);
         int slept = 0;
         try
         {
             while (true)
             {
+                if (slept % 5000 == 0)
+                { // CASSANDRA-8072, retry at the beginning and every 5 seconds
+                    logger.trace("Sending shadow round GOSSIP DIGEST SYN to seeds {}", seeds);
+                    for (InetAddress seed : seeds)
+                        MessagingService.instance().sendOneWay(message, seed);
+                }
+
                 Thread.sleep(1000);
                 if (!inShadowRound)
                     break;
+
                 slept += 1000;
                 if (slept > StorageService.RING_DELAY)
                     throw new RuntimeException("Unable to gossip with any seeds");

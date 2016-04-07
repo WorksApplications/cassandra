@@ -283,11 +283,14 @@ public class CompactionManager implements CompactionManagerMBean
             logger.info("No sstables for {}.{}", cfs.keyspace.getName(), cfs.name);
             return AllSSTableOpStatus.SUCCESSFUL;
         }
+        Set<SSTableReader> sstables = Sets.newHashSet(operation.filterSSTables(compactingSSTables));
+        Set<SSTableReader> filteredAway = Sets.difference(Sets.newHashSet(compactingSSTables), sstables);
+        cfs.getDataTracker().unmarkCompacting(filteredAway);
+        final Set<SSTableReader> finished = Sets.newConcurrentHashSet();
+
+        List<Future<Object>> futures = new ArrayList<>();
         try
         {
-            Iterable<SSTableReader> sstables = operation.filterSSTables(compactingSSTables);
-            List<Future<Object>> futures = new ArrayList<>();
-
             for (final SSTableReader sstable : sstables)
             {
                 if (executor.isShutdown())
@@ -295,23 +298,29 @@ public class CompactionManager implements CompactionManagerMBean
                     logger.info("Executor has shut down, not submitting task");
                     return AllSSTableOpStatus.ABORTED;
                 }
-
                 futures.add(executor.submit(new Callable<Object>()
                 {
                     @Override
                     public Object call() throws Exception
                     {
-                        operation.execute(sstable);
+                        try
+                        {
+                            operation.execute(sstable);
+                        }
+                        finally
+                        {
+                            cfs.getDataTracker().unmarkCompacting(Collections.singleton(sstable));
+                            finished.add(sstable);
+                        }
                         return this;
                     }
                 }));
             }
-
             FBUtilities.waitOnFutures(futures);
         }
         finally
         {
-            cfs.getDataTracker().unmarkCompacting(compactingSSTables);
+            cfs.getDataTracker().unmarkCompacting(Sets.difference(sstables, finished));
         }
         return AllSSTableOpStatus.SUCCESSFUL;
     }
@@ -503,9 +512,9 @@ public class CompactionManager implements CompactionManagerMBean
                     sstableIterator.remove();
                 }
             }
+            validatedForRepair.release(Sets.union(nonAnticompacting, mutatedRepairStatuses));
             cfs.getDataTracker().notifySSTableRepairedStatusChanged(mutatedRepairStatuses);
             cfs.getDataTracker().unmarkCompacting(Sets.union(nonAnticompacting, mutatedRepairStatuses));
-            validatedForRepair.release(Sets.union(nonAnticompacting, mutatedRepairStatuses));
             if (!sstables.isEmpty())
                 doAntiCompaction(cfs, ranges, sstables, repairedAt);
         }
@@ -534,9 +543,11 @@ public class CompactionManager implements CompactionManagerMBean
             return Collections.emptyList();
 
         List<Future<?>> futures = new ArrayList<>();
-
+        int nonEmptyTasks = 0;
         for (final AbstractCompactionTask task : tasks)
         {
+            if (task.sstables.size() > 0)
+                nonEmptyTasks++;
             Runnable runnable = new WrappedRunnable()
             {
                 protected void runMayThrow() throws IOException
@@ -551,6 +562,8 @@ public class CompactionManager implements CompactionManagerMBean
             }
             futures.add(executor.submit(runnable));
         }
+        if (nonEmptyTasks > 1)
+            logger.info("Cannot perform a full major compaction as repaired and unrepaired sstables cannot be compacted together. These two set of sstables will be compacted separately.");
         return futures;
     }
 
@@ -1085,6 +1098,7 @@ public class CompactionManager implements CompactionManagerMBean
         int unrepairedKeyCount = 0;
         logger.info("Performing anticompaction on {} sstables", repairedSSTables.size());
         // iterate over sstables to check if the repaired / unrepaired ranges intersect them.
+        Set<SSTableReader> successfullyAntiCompactedSSTables = new HashSet<>();
         for (SSTableReader sstable : repairedSSTables)
         {
             // check that compaction hasn't stolen any sstables used in previous repair sessions
@@ -1138,7 +1152,8 @@ public class CompactionManager implements CompactionManagerMBean
                 }
                 anticompactedSSTables.addAll(repairedSSTableWriter.finish(repairedAt));
                 anticompactedSSTables.addAll(unRepairedSSTableWriter.finish(ActiveRepairService.UNREPAIRED_SSTABLE));
-                cfs.getDataTracker().markCompactedSSTablesReplaced(sstableAsSet, anticompactedSSTables, OperationType.ANTICOMPACTION);
+                successfullyAntiCompactedSSTables.add(sstable);
+                cfs.getDataTracker().unmarkCompacting(sstableAsSet);
             }
             catch (Throwable e)
             {
@@ -1148,6 +1163,7 @@ public class CompactionManager implements CompactionManagerMBean
                 unRepairedSSTableWriter.abort();
             }
         }
+        cfs.getDataTracker().markCompactedSSTablesReplaced(successfullyAntiCompactedSSTables, anticompactedSSTables, OperationType.ANTICOMPACTION);
         String format = "Repaired {} keys of {} for {}/{}";
         logger.debug(format, repairedKeyCount, (repairedKeyCount + unrepairedKeyCount), cfs.keyspace, cfs.getColumnFamilyName());
         String format2 = "Anticompaction completed successfully, anticompacted from {} to {} sstable(s).";
@@ -1220,6 +1236,20 @@ public class CompactionManager implements CompactionManagerMBean
             Futures.immediateCancelledFuture();
         }
         return executor.submit(runnable);
+    }
+
+    public List<SSTableReader> runIndexSummaryRedistribution(IndexSummaryRedistribution redistribution) throws IOException
+    {
+        metrics.beginCompaction(redistribution);
+
+        try
+        {
+            return redistribution.redistributeSummaries();
+        }
+        finally
+        {
+            metrics.finishCompaction(redistribution);
+        }
     }
 
     static int getDefaultGcBefore(ColumnFamilyStore cfs)

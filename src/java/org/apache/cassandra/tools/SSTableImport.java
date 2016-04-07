@@ -208,6 +208,7 @@ public class SSTableImport
         CFMetaData cfm = cfamily.metadata();
         assert cfm != null;
 
+        // basically row is here-> each row corresponding to each columnn so Each Real will have row + one for decorated key
         for (Object c : row)
         {
             JsonColumn col = new JsonColumn<List>((List) c, cfm);
@@ -313,12 +314,15 @@ public class SSTableImport
         System.out.printf("Importing %s keys...%n", keyCountToImport);
 
         // sort by dk representation, but hold onto the hex version
-        SortedMap<DecoratedKey,Map<?, ?>> decoratedKeys = new TreeMap<DecoratedKey,Map<?, ?>>();
+        SortedMap<DecoratedKey,Map<?, ?>> decoratedKeys = new TreeMap<DecoratedKey,Map<?, ?>>(); // I can create this during readin the sstable //
 
+        
+        // here it puts all the rows in sstable
         for (Object row : data)
         {
             Map<?,?> rowAsMap = (Map<?, ?>)row;
-            decoratedKeys.put(partitioner.decorateKey(getKeyValidator(columnFamily).fromString((String) rowAsMap.get("key"))), rowAsMap);
+            decoratedKeys.put(partitioner.decorateKey(getKeyValidator(columnFamily).fromString((String) rowAsMap.get("key"))), rowAsMap); // this function is useful to generate modified decorated key
+            // this function creates modified decoratedKey and store them 
         }
 
         for (Map.Entry<DecoratedKey, Map<?, ?>> row : decoratedKeys.entrySet())
@@ -329,7 +333,7 @@ public class SSTableImport
             }
 
             Object columns = row.getValue().get("cells");
-            addColumnsToCF((List<?>) columns, columnFamily);
+            addColumnsToCF((List<?>) columns, columnFamily); // here it adds each column to sstable
 
 
             writer.append(row.getKey(), columnFamily);

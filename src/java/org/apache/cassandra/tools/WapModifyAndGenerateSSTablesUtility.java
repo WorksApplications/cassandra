@@ -126,12 +126,13 @@ public class WapModifyAndGenerateSSTablesUtility {
     private static final int MSTOHOUR = 3600000;
     private static final int MSTOMIN = 60000;
     private static final int MSTOSEC = 1000;
-    private static List<String> allFailedColumnFamily = new ArrayList<String>();
-    private static final String logDirectoryPath = System.getProperty("user.dir") + "/transpoLog";
-    private static final String baseModifiedDir = System.getProperty("user.dir") + "/modifiedData/data";
+    private static List<String> allFailedSSTable = new ArrayList<String>();
+    private static final String LOGDIRPATH = System.getProperty("user.dir") + "/transpoLog";
+    private static final String BASEMODIFIEDDIR = System.getProperty("user.dir") + "/modifiedData";
     private static boolean isLogDirectoryCreated = false;
     private static PrintStream logStdOut = null;
-
+    
+    
     static {
 	Option tenantId = new Option(TENANT_ID, true, "tenantId to filter the data");
 	options.addOption(tenantId);
@@ -402,7 +403,7 @@ public class WapModifyAndGenerateSSTablesUtility {
 	    while (scanner.hasNext()) {
 		row = (SSTableIdentityIterator) scanner.next();
 		DecoratedKey decoratedKey = row.getKey();
-		if (!doesContainsTargetKey(tenantId, decoratedKey))
+		if (!doesContainTargetKey(tenantId, decoratedKey))
 		    continue;
 
 		serializeRow(row, row.getKey(), tenantId, replacingTenantId);
@@ -453,7 +454,7 @@ public class WapModifyAndGenerateSSTablesUtility {
      * @return whether above decorated key contains above tenantId as a first
      *         partition key or not
      */
-    public static boolean doesContainsTargetKey(String tenantId, DecoratedKey decoratedKey) {
+    public static boolean doesContainTargetKey(String tenantId, DecoratedKey decoratedKey) {
 	return firskPk(decoratedKey).equals(tenantId);
     }
 
@@ -510,8 +511,13 @@ public class WapModifyAndGenerateSSTablesUtility {
 	String nodes = cmd.getOptionValue(NODE_ADDRESS);
 
 	DatabaseDescriptor.loadSchemas(false);
-
-	for (String ssTableFileName : generateAbsolutePathOfAllSSTables(ssTableDirectoryName)) {
+	
+	List<String> listOfAllSSTables = generateAbsolutePathOfAllSSTables(ssTableDirectoryName);
+	int totalSSTableForgivenCF=listOfAllSSTables.size();
+	int totalProcessedSSTable=0;
+	int totalFailureSSTable=0;
+	
+	for (String ssTableFileName : listOfAllSSTables) {
 
 	    Descriptor descriptor = Descriptor.fromFilename(ssTableFileName);
 
@@ -533,35 +539,53 @@ public class WapModifyAndGenerateSSTablesUtility {
 
 	    // if this is first time then create log directory
 	    if (!isLogDirectoryCreated) {
-		String logDir = logDirectoryPath + "/" + keyspace.getName() + "/" + columnFamilyName;
+		String logDir = LOGDIRPATH + "/" + keyspace.getName() + "/" + columnFamilyName;
 		String logFileName = logDir + "/" + columnFamilyName + "_log.txt";
 		createDirectory(logDir);
 		File logFile = createFile(logFileName);
 		try {
 		    logStdOut = new PrintStream(new FileOutputStream(logFile));
+		    
+		    printAuthorDetails();
+		    
+		    printAndWriteToFile(logStdOut, "");
+		    printAndWriteToFile(logStdOut, "");
+		    printAndWriteToFile(logStdOut, "");
+		    
+		    printAndWriteToFile(logStdOut, "Log Directory :- ");
+		    printAndWriteToFile(logStdOut, "-----------------");
+		    printAndWriteToFile(logStdOut, logDir);
+		    printAndWriteToFile(logStdOut, "");
+		    printAndWriteToFile(logStdOut, "");
+		    printAndWriteToFile(logStdOut, "");
 		} catch (FileNotFoundException e) {
 		    // TODO Auto-generated catch block
 		    e.printStackTrace();
 		}
 		isLogDirectoryCreated = true;
-		logStdOut.println("##If you face any problem while reading the log:- plz contact to");
-		logStdOut.println("### Varun Barala <barala_v@worksap.co.jp>  oOo");
-		logStdOut.println();
-		logStdOut.println();
 	    }
-	    printAndWriteToFile(logStdOut,
-		    "--------------------------------------------------------------------------------------");
-	    logStdOut.println("Processing SSTable:: " + ssTableFileName);
-
-	    String modifiedSSTablePath = baseModifiedDir + "/data" + "/" + keyspace.getName() + "/"
+	 
+	    
+	    printAndWriteToFile(logStdOut, "Processing SSTable:- ");
+	    printAndWriteToFile(logStdOut, "*********************");
+	    printAndWriteToFile(logStdOut, ssTableFileName);
+	    printAndWriteToFile(logStdOut, "");
+	    printAndWriteToFile(logStdOut, "");
+	    
+	    String modifiedSSTablePath = BASEMODIFIEDDIR + "/data" + "/" + keyspace.getName() + "/"
 		    + getDataDirectoryName(ssTableFileName, keyspace.getName());
 	    String modifiedDataDirectoryPath = modifiedSSTablePath.substring(0, modifiedSSTablePath.lastIndexOf("/"));
-	    String transportationFailureSSTables = System.getProperty("user.dir") + "/transportationFailure/data" + "/"
+	    String transportationFailureSSTablesPath = System.getProperty("user.dir") + "/transportationFailure/data" + "/"
 		    + keyspace.getName() + "/" + getDataDirectoryName(ssTableFileName, keyspace.getName());
-
+	    String transportationFailureSSTables = transportationFailureSSTablesPath.substring(0,transportationFailureSSTablesPath.lastIndexOf("/"));
 	    // to generate directory for modified sstables
 	    File modifiedDataDirectory = createDirectory(modifiedDataDirectoryPath);
-
+	    printAndWriteToFile(logStdOut, "Generating SSTable:- ");
+	    printAndWriteToFile(logStdOut, "---------------------");
+	    printAndWriteToFile(logStdOut, modifiedSSTablePath);
+	    printAndWriteToFile(logStdOut, "");
+	    printAndWriteToFile(logStdOut, "");
+	    
 	    ColumnFamilyStore cfStore = null;
 
 	    try {
@@ -597,15 +621,24 @@ public class WapModifyAndGenerateSSTablesUtility {
 
 		String[] argsForBulkLoader = new String[] { "-d " + nodes, modifiedDataDirectoryPath };
 
-		logStdOut.println("----------Transferring SSTable------------");
+		printAndWriteToFile(logStdOut, "Transferring SSTable:- ");
+		printAndWriteToFile(logStdOut, "-----------------------");
 
 		try {
 		    WapBulkLoader.main(argsForBulkLoader, logStdOut);
+		    totalProcessedSSTable++;
 		} catch (Throwable e) {
 		    File transpoFailure = createDirectory(transportationFailureSSTables);
+		    totalFailureSSTable++;
 		    try {
 			System.out.println("transferring file to transpoFailure Directory");
-			allFailedColumnFamily.add(keyspace.getName());
+			printAndWriteToFile(logStdOut, "Failed while transferring, copying this sstable :- ");
+			printAndWriteToFile(logStdOut, "---------------------------");
+			printAndWriteToFile(logStdOut, modifiedSSTablePath);
+			printAndWriteToFile(logStdOut, "");
+			printAndWriteToFile(logStdOut, "");
+			
+			allFailedSSTable.add(transportationFailureSSTablesPath);
 			copyDirectory(modifiedDataDirectory, transpoFailure);
 		    } catch (IOException e1) {
 			// TODO Auto-generated catch block
@@ -615,52 +648,59 @@ public class WapModifyAndGenerateSSTablesUtility {
 
 		// clean data directory
 		if (modifiedDataDirectory.isDirectory()) {
-		    printAndWriteToFile(logStdOut, "removing SStable :: " + modifiedSSTablePath);
+		    printAndWriteToFile(logStdOut, "removing SSTable:- ");
+		    printAndWriteToFile(logStdOut, "-------------------");
+		    printAndWriteToFile(logStdOut, modifiedSSTablePath);
+		    printAndWriteToFile(logStdOut, "");
+		    printAndWriteToFile(logStdOut, "");
+		    
 		    cleanDirectory(modifiedDataDirectory);
 		}
 
 	    } else {
 		printAndWriteToFile(logStdOut,
-			"Does not have data of tenant : " + tenantId + " in SSTable :: " + ssTableFileName);
+			"There is no data for tenant : " + tenantId + " in SSTable :: ");
+		printAndWriteToFile(logStdOut, "--------------------------------------");
+		printAndWriteToFile(logStdOut, ssTableFileName);
+		printAndWriteToFile(logStdOut, "");
+		printAndWriteToFile(logStdOut, "");
 	    }
-	    printAndWriteToFile(logStdOut,
-		    "=================================================oOo========================================================");
+
+	    
+	    // It will print current progress after each SSTable
+	    printCurrentProgress(totalProcessedSSTable,totalSSTableForgivenCF,totalFailureSSTable);
 	}
 
-	long stopTime = System.currentTimeMillis();
-	long elapsedTime = stopTime - startTime;
-
-	printAndWriteToFile(logStdOut, "");
-	printAndWriteToFile(logStdOut, "");
-
-	printAndWriteToFile(logStdOut, "------------------------------------");
-	printAndWriteToFile(logStdOut, "total time(H:M:S) = " + (elapsedTime / MSTOHOUR) + ":" + (elapsedTime / MSTOMIN)
-		+ ":" + (elapsedTime / MSTOSEC));
-	printAndWriteToFile(logStdOut, "-------------------------------------");
-	printAndWriteToFile(logStdOut, "Removing directory : " + System.getProperty("user.dir") + "/modifiedData");
+	printAndWriteToFile(logStdOut, "Removing Data Directory: ");
+	printAndWriteToFile(logStdOut, "-------------------------");
+	printAndWriteToFile(logStdOut, BASEMODIFIEDDIR);
 
 	try {
-	    if (new File(baseModifiedDir).isDirectory()) {
-		FileUtils.deleteRecursive(new File(baseModifiedDir));
+	    if (new File(BASEMODIFIEDDIR).isDirectory()) {
+		FileUtils.deleteRecursive(new File(BASEMODIFIEDDIR));
 	    }
 	} catch (Exception e) {
 	    e.printStackTrace();
 	}
 
 	// to handle all failed SSTables- > It's important**
-	if (allFailedColumnFamily.size() > 0) {
-	    printAndWriteToFile(logStdOut, "list of all failed CF :");
+	if (allFailedSSTable.size() > 0) {
+	    printAndWriteToFile(logStdOut, "list of all failed SSTables :");
 	    printAndWriteToFile(logStdOut, "--------------------------");
-	    printAndWriteToFile(logStdOut, "Removing `modifiedData` directory. For failed sstable please check dir:: "
-		    + System.getProperty("user.dir") + "/transportationFailure/data");
-	    for (String failedCf : allFailedColumnFamily) {
+	    for (String failedCf : allFailedSSTable) {
 		printAndWriteToFile(logStdOut, failedCf);
 	    }
 	    printAndWriteToFile(logStdOut, "-------------------------");
+	    printAndWriteToFile(logStdOut, "Check given dir for all failure sstables "
+		    + System.getProperty("user.dir") + "/transportationFailure/data");
 	} else {
 	    printAndWriteToFile(logStdOut, "All SSTables has been processed Successfully!!");
 	}
 
+	printAndWriteToFile(logStdOut, "");
+	printAndWriteToFile(logStdOut, "");
+
+	printTimeSummary(startTime);
 	System.exit(1);
     }
 
@@ -710,7 +750,6 @@ public class WapModifyAndGenerateSSTablesUtility {
 
 	if (!modifiedDataDirectory.isDirectory()) {
 	    if (modifiedDataDirectory.mkdirs()) {
-		System.out.println("Direcotry Created : " + pathToDirectory);
 	    } else {
 		System.err.println("unable to create direcotry for new generated sstables.");
 		throw new IllegalArgumentException("don't have permission to create directory");
@@ -800,5 +839,50 @@ public class WapModifyAndGenerateSSTablesUtility {
     public static void printAndWriteToFile(PrintStream logOut, String msg) {
 	System.out.println(msg);
 	logOut.println(msg);
+    }
+    
+    
+    /**
+     * To print progress after each SSTable processed
+     * 
+     * @param int total no of SSTables
+     * @param int total no of processed SSTables
+     * @param int total failure of SSTables 
+     */
+    public static void printCurrentProgress(int totalProcessedSSTables, int totalSSTableForgivenCF, int totalFailureSSTables){
+		printAndWriteToFile(logStdOut, "==========================================================================================");
+		printAndWriteToFile(logStdOut, "Total Processed	 |	Total SSTables	|		total failure |		total %  |");
+		printAndWriteToFile(logStdOut, "	"+totalProcessedSSTables+"	 |		"+totalSSTableForgivenCF+"	|		"+totalFailureSSTables+"     	      |		"+(totalProcessedSSTables*100)/totalSSTableForgivenCF+"      |");
+		printAndWriteToFile(logStdOut, "==========================================================================================");
+    }
+    
+    /**
+     * To print Author contact details 
+     */
+    public static void printAuthorDetails(){
+	logStdOut.println("######################################################");
+	logStdOut.println("# Auhtor : Varun Barala (oOo) 			 ");
+	logStdOut.println("# <barala_v@worksap.co.jp>, slack (@varun_barala)     ");
+	logStdOut.println("# KVA,(C)*						 ");
+	logStdOut.println("######################################################");
+	logStdOut.println();
+	logStdOut.println();
+    }
+
+    /**To print final Time Summary for Given CF
+     * @param long starting time
+     * @param long end time
+     */
+    public static void printTimeSummary(long startingTime){
+	long endingTime = System.currentTimeMillis();
+	long elapsedTime = endingTime-startingTime;
+	long HH = (elapsedTime/MSTOHOUR) ;
+	long MM = (elapsedTime/MSTOMIN);
+	long SS = (elapsedTime/MSTOSEC);
+
+	printAndWriteToFile(logStdOut, "========================================");
+	printAndWriteToFile(logStdOut, "Total Time(HH:MM:SS) ::   "+HH+" : "+MM+" : "+SS+"    |");
+	printAndWriteToFile(logStdOut, "========================================");
+	
     }
 }

@@ -1,0 +1,59 @@
+#!/bin/bash
+#Author: Varun Barala (oOo)
+#<barala_v@worksp.co.jp>, slack (@varun_barala)
+
+# purpose: When we need to store the data of any given tenant || we need to manipulate the first partition key 
+# Arguments :
+	# -d <node ip address>
+	# -tenantId <tenant1>
+	# -replaceWith <tenant1Dev>
+	# <path to SSTables>
+# Example :-> `./waptranspoutility -d 172.26.152.113 -tenantId tenant1 -replaceWith tenant1Dev /media/disk1/Cassandra-2.1.3/apache-cassandra-2.1.3/data/data/deleteinfotest/table1-e78d6c42fc9511e5b7b455bc51b0510e`
+# Note:- Directory in which this script should reside :-> `$CASSANDRA_HOME/tools/bin/`
+# Note:- don't forget to put `waptranspoutility.jar` in `$CASSANDRA_HOME/lib`
+# NOTE:- only compatible with version cassandra-2.1.13
+# It will create few directories :-
+	# modifedData/data/Ks/CF (temp)
+	# transpoLog/KS/CF/log.txt // to maintain all the logd
+	# transportationFailure/data/KS/CF (this dir will contain all the failure sstables)
+
+
+
+if [ "x$CASSANDRA_INCLUDE" = "x" ]; then
+	for include in "`dirname "$0"`/cassandra.in.sh" \
+		       "$HOME/.cassandra.in.sh" \
+		       /usr/share/cassandra/cassandra.in.sh \
+		       /usr/local/share/cassandra/cassandra.in.sh \
+		       /opt/cassandra/cassandra.in.sh; do
+	if [ -r "$include" ]; then
+		. "$include"
+		break
+	fi
+	done
+elif [ -r "$CASSANDRA_INCLUDE" ]; then
+       . "$CASSANDRA_INCLUDE"	
+fi
+
+
+# Use JAVA_HOME if set, otherwise look for java in PATH
+if [ -x "$JAVA_HOME/bin/java" ]; then
+	JAVA="$JAVA_HOME/bin/java"
+else
+	JAVA="`which java`"
+fi
+
+# Check for classpath -> if you have sourced correct `cassandra.in.sh` file then it will be fine
+if [ -z "$CLASSPATH" ]; then 
+	echo "You must set the CLASSPATH var:: If you are using $CASSANDRA_INCLUDE then check you have defined CLASSPATH" >&2
+	exit 1
+fi
+
+
+# After Setting up JAVA_HOME, CLASSPATH and other Basic (C)* variables i.e conf, dataDir ...etc, Let's run utility
+
+"$JAVA" $JAVA_AGENT -cp "$CLASSPATH" -Dstorage-conf="$CASSANDRA_CONF=" \
+	-Dcassandra.storagedir="$cassandra_storagedir" \
+	-Dlogback.configurationFile=logback-tools.xml \
+	org.apache.cassandra.tools.WapModifyAndGenerateSSTablesUtility "$@"
+
+# Ideas are bulletproof

@@ -658,6 +658,7 @@ public class WapModifyAndGenerateSSTablesUtility {
 		}
 
 	    } else {
+		totalProcessedSSTable++;
 		printAndWriteToFile(logStdOut,
 			"There is no data for tenant : " + tenantId + " in SSTable :: ");
 		printAndWriteToFile(logStdOut, "--------------------------------------");

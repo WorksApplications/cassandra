@@ -29,10 +29,12 @@ import org.apache.cassandra.db.CounterCell;
 import org.apache.cassandra.db.DecoratedKey;
 import org.apache.cassandra.db.DeletedCell;
 import org.apache.cassandra.db.DeletionInfo;
+import org.apache.cassandra.db.DeletionTime;
 import org.apache.cassandra.db.ExpiringCell;
 import org.apache.cassandra.db.Keyspace;
 import org.apache.cassandra.db.OnDiskAtom;
 import org.apache.cassandra.db.RangeTombstone;
+import org.apache.cassandra.db.RowIndexEntry;
 import org.apache.cassandra.db.composites.CellName;
 import org.apache.cassandra.db.composites.CellNameType;
 import org.apache.cassandra.db.composites.Composite;
@@ -44,10 +46,12 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
+import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.SSTableIdentityIterator;
 import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.io.sstable.SSTableWriter;
 import org.apache.cassandra.io.util.FileUtils;
+import org.apache.cassandra.io.util.RandomAccessReader;
 import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.service.ActiveRepairService;
 import org.apache.cassandra.utils.ByteBufferUtil;
@@ -57,6 +61,7 @@ import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.PosixParser;
+import org.apache.pig.data.SortedDataBag;
 
 /**
  *
@@ -131,7 +136,7 @@ public class WapModifyAndGenerateSSTablesUtility {
     private static final String BASEMODIFIEDDIR = System.getProperty("user.dir") + "/modifiedData";
     private static boolean isLogDirectoryCreated = false;
     private static PrintStream logStdOut = null;
-    
+   
     
     static {
 	Option tenantId = new Option(TENANT_ID, true, "tenantId to filter the data");
@@ -389,15 +394,18 @@ public class WapModifyAndGenerateSSTablesUtility {
      * @param metadata Metadata to print keys in a proper format
      * @throws IOException on failure to read/write input/output
      */
-    private static void readSSTable(Descriptor desc, CFMetaData metadata, String tenantId, String replacingTenantId)
+    private static void readSSTable(Descriptor desc, CFMetaData metadata, String tenantId, String replacingTenantId, String modifiedSSTablePath)
 	    throws IOException {
-	readSSTable(SSTableReader.open(desc), metadata, tenantId, replacingTenantId);
+	readSSTable(SSTableReader.open(desc), metadata, tenantId, replacingTenantId, modifiedSSTablePath);
     }
 
-    static void readSSTable(SSTableReader reader, CFMetaData metadata, String tenantId, String replacingTenantId)
+    static void readSSTable(SSTableReader reader, CFMetaData metadata, String tenantId, String replacingTenantId, String modifiedSSTablePath)
 	    throws IOException {
 	SSTableIdentityIterator row;
 	ISSTableScanner scanner = reader.getScanner();
+	SortedMap<DecoratedKey, DecoratedKey> sortedModifiedDecoratedKey = new TreeMap<DecoratedKey,DecoratedKey>();
+	
+	
 	try {
 	    // collecting keys to export
 	    while (scanner.hasNext()) {
@@ -406,17 +414,64 @@ public class WapModifyAndGenerateSSTablesUtility {
 		if (!doesContainTargetKey(tenantId, decoratedKey))
 		    continue;
 
-		serializeRow(row, row.getKey(), tenantId, replacingTenantId);
+		// here we manipulate the decorated keys
+		String modifiedDecoratedKey = row.getColumnFamily().metadata().getKeyValidator().getString(row.getKey().getKey()).replaceAll(tenantId,
+			replacingTenantId);
+		sortedModifiedDecoratedKey.put(modifyDecoratedKey(row, modifiedDecoratedKey),row.getKey());
+		// convert string thing
+		//serializeRow(row, row.getKey(), tenantId, replacingTenantId);
 		keyCountToImport++;
 	    }
+	    
+	    if(keyCountToImport!=0){
+		SSTableWriter writer = new SSTableWriter(modifiedSSTablePath, keyCountToImport,
+			ActiveRepairService.UNREPAIRED_SSTABLE);
+	    
+	    // now iterate over the decorated key to fetch the row
+	    RandomAccessReader dfile = reader.openDataReader();
+	    for(Map.Entry<DecoratedKey, DecoratedKey> decoratedKey : sortedModifiedDecoratedKey.entrySet()){
+		List<Object> columnsForGivenRow = new ArrayList<Object>();
+		RowIndexEntry entry = reader.getPosition(decoratedKey.getValue(), SSTableReader.Operator.EQ);
+		if(entry==null){
+		    continue;
+		}
+		dfile.seek(entry.position);
+		ByteBufferUtil.readWithShortLength(dfile);
+		DeletionInfo deletionInfo = new DeletionInfo(DeletionTime.serializer.deserialize(dfile));
+		Iterator<OnDiskAtom> atomIterator = reader.metadata.getOnDiskIterator(dfile, reader.descriptor.version);
+		while (atomIterator.hasNext()) {
+		    columnsForGivenRow.add(serializeAtom(atomIterator.next(), metadata));
+		}
+		
+		ColumnFamily cfamily = ArrayBackedSortedColumns.factory.create(metadata.ksName,metadata.cfName);
 
+		addColumnsToCF(columnsForGivenRow, cfamily);
+		writer.append(decoratedKey.getKey(),cfamily);
+		cfamily.clear();
+	    }
+	    
+	    // store all th
+	    writer.closeAndOpenReader().selfRef().release();
+
+	    }
 	} finally {
 	    scanner.close();
 	    reader.selfRef().release();
-	    assert reader.selfRef().globalCount() == 0;
 	}
     }
 
+    /**
+     * @param 
+     * 
+     */
+    public static void writeIntoSSTable(){
+	try{
+	    
+	}finally{
+	    
+	}
+    }
+    
     /**
      * Get key validator for column family
      *
@@ -598,26 +653,12 @@ public class WapModifyAndGenerateSSTablesUtility {
 	    }
 
 	    try {
-		readSSTable(descriptor, cfStore.metadata, tenantId, replacingTenantId);
+		readSSTable(descriptor, cfStore.metadata, tenantId, replacingTenantId, modifiedSSTablePath);
 	    } catch (IOException e) {
 		e.printStackTrace(System.err);
 	    }
 	    if (keyCountToImport != 0) {
-		SSTableWriter writer = new SSTableWriter(modifiedSSTablePath, keyCountToImport,
-			ActiveRepairService.UNREPAIRED_SSTABLE);
-		ColumnFamily cfamily = ArrayBackedSortedColumns.factory.create(keyspace.getName(),
-			cfStore.getColumnFamilyName());
-
-		for (Map.Entry<DecoratedKey, List<Object>> row : allSortedModifiedRow.entrySet()) {
-		    addColumnsToCF(row.getValue(), cfamily);
-		    writer.append(row.getKey(), cfamily);
-		    cfamily.clear();
-		}
-
-		writer.closeAndOpenReader().selfRef().release();
-		allSortedModifiedRow.clear();
-		keyCountToImport = 0;
-		System.out.println(String.format(successFullyGenerated, modifiedSSTablePath));
+		keyCountToImport=0;
 
 		String[] argsForBulkLoader = new String[] { "-d " + nodes, modifiedDataDirectoryPath };
 
@@ -841,6 +882,12 @@ public class WapModifyAndGenerateSSTablesUtility {
 	System.out.println(msg);
 	logOut.println(msg);
     }
+
+    public static void printAndWriteToFile(PrintStream logOut, Object...msg ) {
+	String format = "%20s | %20s | %20s | %20s |";
+	System.out.println(String.format(format, msg));
+	logOut.println(msg);
+    }
     
     
     /**
@@ -851,10 +898,11 @@ public class WapModifyAndGenerateSSTablesUtility {
      * @param int total failure of SSTables 
      */
     public static void printCurrentProgress(int totalProcessedSSTables, int totalSSTableForgivenCF, int totalFailureSSTables){
-		printAndWriteToFile(logStdOut, "==========================================================================================");
-		printAndWriteToFile(logStdOut, "Total Processed	 |	Total SSTables	|		total failure |		total %  |");
-		printAndWriteToFile(logStdOut, "	"+totalProcessedSSTables+"	 |		"+totalSSTableForgivenCF+"	|		"+totalFailureSSTables+"     	      |		"+(totalProcessedSSTables*100)/totalSSTableForgivenCF+"      |");
-		printAndWriteToFile(logStdOut, "==========================================================================================");
+	printAndWriteToFile(logStdOut, "==========================================================================================");
+	printAndWriteToFile(logStdOut, "Total Processed", "Total SSTables","total failure", "total %");
+	printAndWriteToFile(logStdOut, totalProcessedSSTables, totalSSTableForgivenCF, totalFailureSSTables, (totalProcessedSSTables*100)/totalSSTableForgivenCF);
+	printAndWriteToFile(logStdOut, "==========================================================================================");
+
     }
     
     /**

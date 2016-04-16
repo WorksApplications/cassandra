@@ -627,11 +627,11 @@ public class WapModifyAndGenerateSSTablesUtility {
 	    printAndWriteToFile(logStdOut, "");
 	    printAndWriteToFile(logStdOut, "");
 	    
-	    String modifiedSSTablePath = BASEMODIFIEDDIR + "/data" + "/" + keyspace.getName() + "/"
-		    + getDataDirectoryName(ssTableFileName, keyspace.getName());
+	    String modifiedSSTablePath = BASEMODIFIEDDIR + "/data" + "/" + keyspace.getName() + "/" + columnFamilyName+"/"
+		    + getDataDirectoryName(ssTableFileName);
 	    String modifiedDataDirectoryPath = modifiedSSTablePath.substring(0, modifiedSSTablePath.lastIndexOf("/"));
 	    String transportationFailureSSTablesPath = System.getProperty("user.dir") + "/transportationFailure/data" + "/"
-		    + keyspace.getName() + "/" + getDataDirectoryName(ssTableFileName, keyspace.getName());
+		    + keyspace.getName() + "/"+ columnFamilyName+ "/"+getDataDirectoryName(ssTableFileName);
 	    String transportationFailureSSTables = transportationFailureSSTablesPath.substring(0,transportationFailureSSTablesPath.lastIndexOf("/"));
 	    // to generate directory for modified sstables
 	    File modifiedDataDirectory = createDirectory(modifiedDataDirectoryPath);
@@ -752,8 +752,8 @@ public class WapModifyAndGenerateSSTablesUtility {
      * @param keyspaceName
      * @return part of directory after "KS" i.e '/ks/cf'
      */
-    private static String getDataDirectoryName(String path, String keyspaceName) {
-	List<String> allDirectories = Arrays.asList(path.split("/" + keyspaceName + "/"));
+    private static String getDataDirectoryName(String SSTableFileName) {
+	List<String> allDirectories = Arrays.asList(SSTableFileName.split("/"));
 	if (allDirectories.size() > 1) {
 	    return allDirectories.get(allDirectories.size() - 1);
 	}
@@ -926,8 +926,8 @@ public class WapModifyAndGenerateSSTablesUtility {
 	long endingTime = System.currentTimeMillis();
 	long elapsedTime = endingTime-startingTime;
 	long HH = (elapsedTime/MSTOHOUR) ;
-	long MM = (elapsedTime/MSTOMIN);
-	long SS = (elapsedTime/MSTOSEC);
+	long MM = ((elapsedTime%MSTOHOUR)/MSTOMIN);
+	long SS = (((elapsedTime%MSTOHOUR)%MSTOMIN)/MSTOSEC);
 
 	printAndWriteToFile(logStdOut, "========================================");
 	printAndWriteToFile(logStdOut, "Total Time(HH:MM:SS) ::   "+HH+" : "+MM+" : "+SS+"    |");

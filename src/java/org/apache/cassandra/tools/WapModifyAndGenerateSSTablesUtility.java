@@ -8,8 +8,10 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -536,7 +538,7 @@ public class WapModifyAndGenerateSSTablesUtility {
 	String usage = String.format(
 		"Usage: %s -d <node1,node2,node3> -tenantId [tenant1] -replaceWith [tenant1Staging] <directoryPathForSSTables> %n",
 		SSTableExport.class.getName());
-	String successFullyGenerated = "SuccessFully generated SSTables :: %s";
+	
 
 	CommandLineParser parser = new PosixParser();
 
@@ -595,7 +597,7 @@ public class WapModifyAndGenerateSSTablesUtility {
 	    // if this is first time then create log directory
 	    if (!isLogDirectoryCreated) {
 		String logDir = LOGDIRPATH + "/" + keyspace.getName() + "/" + columnFamilyName;
-		String logFileName = logDir + "/" + columnFamilyName + "_log.txt";
+		String logFileName = logDir + "/" + columnFamilyName + "_log_"+new SimpleDateFormat("yyyy.MM.dd.HH.mm.ss").format(new Date())+".txt";
 		createDirectory(logDir);
 		File logFile = createFile(logFileName);
 		try {
@@ -716,7 +718,9 @@ public class WapModifyAndGenerateSSTablesUtility {
 	printAndWriteToFile(logStdOut, "Removing Data Directory: ");
 	printAndWriteToFile(logStdOut, "-------------------------");
 	printAndWriteToFile(logStdOut, BASEMODIFIEDDIR);
-
+	printAndWriteToFile(logStdOut, "");
+	printAndWriteToFile(logStdOut, "");
+	
 	try {
 	    if (new File(BASEMODIFIEDDIR).isDirectory()) {
 		FileUtils.deleteRecursive(new File(BASEMODIFIEDDIR));
@@ -874,7 +878,7 @@ public class WapModifyAndGenerateSSTablesUtility {
 
     /**
      * @purpose To display at both level
-     * @param log file
+     * @param printStream
      * @param String message
      *
      */
@@ -886,7 +890,7 @@ public class WapModifyAndGenerateSSTablesUtility {
     public static void printAndWriteToFile(PrintStream logOut, Object...msg ) {
 	String format = "%20s | %20s | %20s | %20s |";
 	System.out.println(String.format(format, msg));
-	logOut.println(msg);
+	logOut.println(String.format(format, msg));
     }
     
     
@@ -900,7 +904,7 @@ public class WapModifyAndGenerateSSTablesUtility {
     public static void printCurrentProgress(int totalProcessedSSTables, int totalSSTableForgivenCF, int totalFailureSSTables){
 	printAndWriteToFile(logStdOut, "==========================================================================================");
 	printAndWriteToFile(logStdOut, "Total Processed", "Total SSTables","total failure", "total %");
-	printAndWriteToFile(logStdOut, totalProcessedSSTables, totalSSTableForgivenCF, totalFailureSSTables, (totalProcessedSSTables*100)/totalSSTableForgivenCF);
+	printAndWriteToFile(logStdOut, totalProcessedSSTables, totalSSTableForgivenCF, totalFailureSSTables, ((totalProcessedSSTables+totalFailureSSTables)*100)/totalSSTableForgivenCF);
 	printAndWriteToFile(logStdOut, "==========================================================================================");
 
     }
@@ -910,7 +914,7 @@ public class WapModifyAndGenerateSSTablesUtility {
      */
     public static void printAuthorDetails(){
 	logStdOut.println("######################################################");
-	logStdOut.println("# Auhtor : Varun Barala (oOo) 			 ");
+	logStdOut.println("# Author : Varun Barala (oOo) 			 ");
 	logStdOut.println("# <barala_v@worksap.co.jp>, slack (@varun_barala)     ");
 	logStdOut.println("# KVA,(C)*						 ");
 	logStdOut.println("######################################################");

@@ -134,6 +134,8 @@ public class WapBulkLoader {
 			if (e.getCause() != null)
 				System.err.println(e.getCause());
 			e.printStackTrace(System.err);
+			printAndWriteStream(logStdOut, e.getMessage().toString());
+			printAndWriteStream(logStdOut, e.getCause().toString());
 			// System.exit(1);
 		}
 
@@ -150,6 +152,8 @@ public class WapBulkLoader {
 			System.err.println("Streaming to the following hosts failed:");
 			System.err.println(loader.getFailedHosts());
 			e.printStackTrace(System.err);
+			printAndWriteStream(logStdOut, e.getMessage().toString());
+			printAndWriteStream(logStdOut, e.getCause().toString());
 			throw new IllegalArgumentException("bulk loader failed");
 			// System.exit(1);
 		}

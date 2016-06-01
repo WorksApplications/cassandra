@@ -8,8 +8,10 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -627,11 +629,15 @@ public class WapModifyAndGenerateSSTablesUtility {
 	    printAndWriteToFile(logStdOut, "");
 	    printAndWriteToFile(logStdOut, "");
 	    
-	    String modifiedSSTablePath = BASEMODIFIEDDIR + "/data" + "/" + keyspace.getName() + "/" + columnFamilyName+"/"
+	    
+	    // append timestamp to avoid override conflicts -> format will be "yyyyMMddHHmmss" 
+	    String timeStamp = new SimpleDateFormat("yyyyMMddHHmmss").format(new Date());
+	    
+	    String modifiedSSTablePath = BASEMODIFIEDDIR + "/data" + "/" + timeStamp + "/" + keyspace.getName() + "/" + columnFamilyName+"/"
 		    + getDataDirectoryName(ssTableFileName);
 	    String modifiedDataDirectoryPath = modifiedSSTablePath.substring(0, modifiedSSTablePath.lastIndexOf("/"));
 	    String transportationFailureSSTablesPath = System.getProperty("user.dir") + "/transportationFailure/data" + "/"
-		    + keyspace.getName() + "/"+ columnFamilyName+ "/"+getDataDirectoryName(ssTableFileName);
+		    +timeStamp + "/" + keyspace.getName() + "/"+ columnFamilyName+ "/"+getDataDirectoryName(ssTableFileName);
 	    String transportationFailureSSTables = transportationFailureSSTablesPath.substring(0,transportationFailureSSTablesPath.lastIndexOf("/"));
 	    // to generate directory for modified sstables
 	    File modifiedDataDirectory = createDirectory(modifiedDataDirectoryPath);

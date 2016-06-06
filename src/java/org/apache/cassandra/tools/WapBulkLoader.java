@@ -107,10 +107,7 @@ public class WapBulkLoader {
 	private static final String SSL_CIPHER_SUITES = "ssl-ciphers";
 	private static final String CONNECTIONS_PER_HOST = "connections-per-host";
 	private static final String CONFIG_PATH = "conf-path";
-	private static int totalProcessedSSTables=0;
-	private static int totalFailureSSTables=0;
-	private static int totalSSTables=0;
-	
+
 	public static void main(String args[], PrintStream logStdOut) {
 	    	Config.setClientMode(true);
 		LoaderOptions options = LoaderOptions.parseArgs(args);
@@ -142,18 +139,15 @@ public class WapBulkLoader {
 			printAndWriteStream(logStdOut, e.getCause().toString());
 			// System.exit(1);
 		}
-		totalSSTables = WapTranspoUtil.countTotalSSTables(options.directory.getAbsolutePath());
 		try {
 			future.get();
 
 			if (!options.noProgress)
 				indicator.printSummary(options.connectionsPerHost, logStdOut);
-			totalProcessedSSTables++;
 			// Give sockets time to gracefully close
 			Thread.sleep(1000);
 			// System.exit(0); // We need that to stop non daemonized threads
 		} catch (Exception e) {
-		        totalFailureSSTables++;
 			System.err.println("Streaming to the following hosts failed:");
 			System.err.println(loader.getFailedHosts());
 			e.printStackTrace(System.err);
@@ -276,6 +270,8 @@ public class WapBulkLoader {
 			sb.append(String.format("   %-30s: %-10d%n", "Peak transfer rate (MB/s): ", +peak));
 			// System.out.println(sb.toString());
 			printAndWriteStream(logStdOut, sb.toString());
+			
+			//WapTranspoUtil.printCurrentProgress(logStdOut, totalProcessedSSTables, totalSSTables, totalFailureSSTables);
 
 		}
 	}

@@ -48,7 +48,6 @@ import org.apache.cassandra.dht.IPartitioner;
 import org.apache.cassandra.exceptions.ConfigurationException;
 import org.apache.cassandra.io.sstable.Descriptor;
 import org.apache.cassandra.io.sstable.ISSTableScanner;
-import org.apache.cassandra.io.sstable.SSTable;
 import org.apache.cassandra.io.sstable.SSTableIdentityIterator;
 import org.apache.cassandra.io.sstable.SSTableReader;
 import org.apache.cassandra.io.sstable.SSTableWriter;
@@ -63,7 +62,6 @@ import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.PosixParser;
-import org.apache.pig.data.SortedDataBag;
 
 /**
  *
@@ -701,7 +699,7 @@ public class WapModifyAndGenerateSSTablesUtility {
 		    printAndWriteToFile(logStdOut, "");
 		    printAndWriteToFile(logStdOut, "");
 		    
-		    cleanDirectory(modifiedDataDirectory);
+		    //cleanDirectory(modifiedDataDirectory);
 		}
 
 	    } else {

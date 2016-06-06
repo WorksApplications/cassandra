@@ -2,6 +2,7 @@ package org.apache.cassandra.tools;
 
 import java.io.File;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -41,6 +42,16 @@ public class WapTranspoUtil {
 	return absolutePathOfAllSSTables;
     }
     
+    
+    /**
+     * To count total sstables for given directory
+     * 
+     * @param String data directory path
+     */
+    
+    public static int countTotalSSTables(String directoryPath){
+	return generateAbsolutePathOfAllSSTables(directoryPath).size();
+    }
     
     /**
      * To generate the directory
@@ -115,5 +126,27 @@ public class WapTranspoUtil {
 	return UTF8Type.instance.getString(firstPkBf);
    }
    
+   
+   /**
+    * To print progress after each SSTable processed
+    * 
+    * @param int total no of SSTables
+    * @param int total no of processed SSTables
+    * @param int total failure of SSTables 
+    */
+   public static void printCurrentProgress(PrintStream logStdOut,int totalProcessedSSTables, int totalSSTableForgivenCF, int totalFailureSSTables){
+	printAndWriteToFile(logStdOut, "==========================================================================================");
+	printAndWriteToFile(logStdOut, "Total Processed", "Total SSTables","total failure", "total %");
+	printAndWriteToFile(logStdOut, totalProcessedSSTables, totalSSTableForgivenCF, totalFailureSSTables, ((totalProcessedSSTables+totalFailureSSTables)*100)/totalSSTableForgivenCF);
+	printAndWriteToFile(logStdOut, "==========================================================================================");
+
+   }
+   
+   public static void printAndWriteToFile(PrintStream logOut, Object...msg ) {
+	String format = "%20s | %20s | %20s | %20s |";
+	System.out.println(String.format(format, msg));
+	logOut.println(String.format(format, msg));
+   }
+
    
 }

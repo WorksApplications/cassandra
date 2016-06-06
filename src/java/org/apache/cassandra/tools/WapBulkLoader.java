@@ -82,6 +82,7 @@ import com.google.common.collect.Multimap;
 
 public class WapBulkLoader {
 	private static final String TOOL_NAME = "sstableloader";
+	private static final String TARGET_KEYSPACE_OPTION = "targetKeyspace";
 	private static final String VERBOSE_OPTION = "verbose";
 	private static final String HELP_OPTION = "help";
 	private static final String NOPROGRESS_OPTION = "no-progress";
@@ -106,13 +107,16 @@ public class WapBulkLoader {
 	private static final String SSL_CIPHER_SUITES = "ssl-ciphers";
 	private static final String CONNECTIONS_PER_HOST = "connections-per-host";
 	private static final String CONFIG_PATH = "conf-path";
-
+	private static int totalProcessedSSTables=0;
+	private static int totalFailureSSTables=0;
+	private static int totalSSTables=0;
+	
 	public static void main(String args[], PrintStream logStdOut) {
-		Config.setClientMode(true);
+	    	Config.setClientMode(true);
 		LoaderOptions options = LoaderOptions.parseArgs(args);
 		OutputHandler handler = new OutputHandler.SystemOutput(options.verbose, options.debug);
 		SSTableLoader loader = new SSTableLoader(options.directory,
-				new ExternalClient(options.hosts, options.rpcPort, options.user, options.passwd,
+				new ExternalClient(options.hosts, options.rpcPort, options.user, options.passwd, options.targetKeyspace,
 						options.transportFactory, options.storagePort, options.sslStoragePort,
 						options.serverEncOptions),
 				handler, options.connectionsPerHost);
@@ -138,17 +142,18 @@ public class WapBulkLoader {
 			printAndWriteStream(logStdOut, e.getCause().toString());
 			// System.exit(1);
 		}
-
+		totalSSTables = WapTranspoUtil.countTotalSSTables(options.directory.getAbsolutePath());
 		try {
 			future.get();
 
 			if (!options.noProgress)
 				indicator.printSummary(options.connectionsPerHost, logStdOut);
-
+			totalProcessedSSTables++;
 			// Give sockets time to gracefully close
 			Thread.sleep(1000);
 			// System.exit(0); // We need that to stop non daemonized threads
 		} catch (Exception e) {
+		        totalFailureSSTables++;
 			System.err.println("Streaming to the following hosts failed:");
 			System.err.println(loader.getFailedHosts());
 			e.printStackTrace(System.err);
@@ -279,6 +284,7 @@ public class WapBulkLoader {
 		private final Map<String, CFMetaData> knownCfs = new HashMap<>();
 		private final Set<InetAddress> hosts;
 		private final int rpcPort;
+		private final String targetKeyspace;
 		private final String user;
 		private final String passwd;
 		private final ITransportFactory transportFactory;
@@ -292,6 +298,7 @@ public class WapBulkLoader {
 			super();
 			this.hosts = hosts;
 			this.rpcPort = port;
+			this.targetKeyspace = null;
 			this.user = user;
 			this.passwd = passwd;
 			this.transportFactory = transportFactory;
@@ -300,8 +307,26 @@ public class WapBulkLoader {
 			this.serverEncOptions = serverEncryptionOptions;
 		}
 
+		public ExternalClient(Set<InetAddress> hosts, int port, String user, String passwd, String targetKeyspace,
+			ITransportFactory transportFactory, int storagePort, int sslStoragePort,
+			EncryptionOptions.ServerEncryptionOptions serverEncryptionOptions) {
+		super();
+		this.hosts = hosts;
+		this.rpcPort = port;
+		this.targetKeyspace = targetKeyspace;
+		this.user = user;
+		this.passwd = passwd;
+		this.transportFactory = transportFactory;
+		this.storagePort = storagePort;
+		this.sslStoragePort = sslStoragePort;
+		this.serverEncOptions = serverEncryptionOptions;
+	}
+		
 		@Override
 		public void init(String keyspace) {
+		    	if(this.targetKeyspace!=null){
+		    	    keyspace = this.targetKeyspace;
+		    	}
 			Iterator<InetAddress> hostiter = hosts.iterator();
 			while (hostiter.hasNext()) {
 				try {
@@ -397,6 +422,7 @@ public class WapBulkLoader {
 		public boolean verbose;
 		public boolean noProgress;
 		public int rpcPort = 9160;
+		public String targetKeyspace;
 		public String user;
 		public String passwd;
 		public int throttle = 0;
@@ -560,6 +586,10 @@ public class WapBulkLoader {
 					configureTransportFactory(transportFactory, opts);
 					opts.transportFactory = transportFactory;
 				}
+				
+				if(cmd.hasOption(TARGET_KEYSPACE_OPTION)){
+				    opts.targetKeyspace = cmd.getOptionValue(TARGET_KEYSPACE_OPTION);
+				}
 
 				return opts;
 			} catch (ParseException | ConfigurationException | MalformedURLException e) {
@@ -649,6 +679,7 @@ public class WapBulkLoader {
 					"Client SSL: comma-separated list of encryption suites to use");
 			options.addOption("f", CONFIG_PATH, "path to config file",
 					"cassandra.yaml file path for streaming throughput and client/server SSL.");
+			options.addOption("k", TARGET_KEYSPACE_OPTION, "targetKeyspace", "target keyspace to stream");
 			return options;
 		}
 

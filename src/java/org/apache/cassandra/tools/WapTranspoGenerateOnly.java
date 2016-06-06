@@ -57,6 +57,8 @@ import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.PosixParser;
 
+import jdk.nashorn.internal.runtime.Context.ThrowErrorManager;
+
 /**
  *
  * @author barala
@@ -121,7 +123,7 @@ public class WapTranspoGenerateOnly {
     private static final String TENANT_ID = "tenantId";
     private static final String REPLACE_WITH = "replaceWith";
     private static final String NODE_ADDRESS = "d";
-    private static final String TARGET_KEYSPACE = "";
+    private static final String TARGET_KEYSPACE = "k";
     private static final String MODE = "mode";
     private static final Options options = new Options();
     private static CommandLine cmd;
@@ -136,7 +138,7 @@ public class WapTranspoGenerateOnly {
     private static final String LOGGENERATEDDIRPATH = System.getProperty("user.dir") + "/transpoLog/Generated";
     private static final String LOGTRANSPODDIRPATH = System.getProperty("user.dir") + "/transpoLog/Transpo";
     private static final String BASEMODIFIEDDIR = System.getProperty("user.dir") + "/modifiedData/Generated";
-    private static final String BASEGENERATEDDIR = System.getProperty("user.dir") + "/modifiedData/Filtered";
+    private static final String BASEFILTEREDDDIR = System.getProperty("user.dir") + "/modifiedData/Filtered";
     private static boolean isLogDirectoryCreated = false;
     private static PrintStream logStdOut = null;
     private static String TIMESTAMP;   
@@ -237,7 +239,7 @@ public class WapTranspoGenerateOnly {
 	}
     }
 
-    
+
     /**
      * Convert a string to bytes (ByteBuffer) according to type
      *
@@ -255,14 +257,21 @@ public class WapTranspoGenerateOnly {
 	}
     }
 
-    
-    
+
+
     public static void main(String[] args) {
 	long startTime = System.currentTimeMillis();
 	String usage = String.format(
 		"Usage: %s -k KS -d <node1,node2,node3> -tenantId [tenant1] -replaceWith [tenant1Staging] <directoryPathForSSTables> %n",
 		SSTableExport.class.getName());
 
+	String modeUsage = String.format("There are three mode we support \n"
+		+ "(1). %s \n"
+		+ "(2). %s \n"
+		+ "(3). %s \n",
+		"F (for filter Only)",
+		"G (for generate modified SStable for different tenantId)",
+		"GT (for generate and transfer all sstables for given tenant and replace with 'replacing tenantId')");
 
 	CommandLineParser parser = new PosixParser();
 
@@ -300,121 +309,231 @@ public class WapTranspoGenerateOnly {
 	}
 
 	if(!cmd.hasOption(TARGET_KEYSPACE)){
+	    System.out.println("------------------------------------------------------------------------------");
 	    System.out.println("Since you haven't specified the target keyspace then It's going to use default");
+	    System.out.println("------------------------------------------------------------------------------");
 	}
 
 	String tenantId = cmd.getOptionValue(TENANT_ID);
 	String replacingTenantId = cmd.getOptionValue(REPLACE_WITH);
-	String ssTableDirectoryName = new File(cmd.getArgs()[0]).getAbsolutePath();
+	String SSTableDirectoryName = new File(cmd.getArgs()[0]).getAbsolutePath();
 	String nodes = cmd.getOptionValue(NODE_ADDRESS);
 	String mode = cmd.getOptionValue(MODE);
 	String targetKeyspace = cmd.getOptionValue(TARGET_KEYSPACE);
-
+	
 
 	// this is to set mode for given task
 
 	DatabaseDescriptor.loadSchemas(false);
 
-	List<String> listOfAllSSTables = WapTranspoUtil.generateAbsolutePathOfAllSSTables(ssTableDirectoryName);
-
-	// now iterate over each SSTable
-	for (String SSTableFileName : listOfAllSSTables) {
-	    System.out.println("mode ::" + mode);
-	    switch(mode){
-	    case "G": filterOnly(SSTableFileName,tenantId);
-	    break;
-	    case "T": transferOnly(SSTableFileName);
-	    break;
-	    case "GT": generateAndTransfer(SSTableFileName);
-	    break;
-	    default : System.err.println("Invalid mode!!");
-	    System.exit(1);
-	    }
+	switch(mode){
+	case "F": filterOnly(SSTableDirectoryName,tenantId);
+	break;
+	case "T": transferOnly(SSTableDirectoryName,nodes,targetKeyspace);
+	break;
+	case "G": generateOnly(SSTableDirectoryName,tenantId,replacingTenantId);
+	break;
+	default : System.err.println("Invalid mode!!\n" + modeUsage);
+	System.exit(1);
 	}
-	System.out.println("it was inside main");
+
 	// last time to print final summary
+	
 	printTimeSummary(startTime);
+	System.exit(1);
     }
 
 
     // this will generate modified SSTable(manipulte the tenantID) and remove them
-    private static void generateAndTransfer(String ssTableFileName) {
+    private static void generateOnly(String SSTableDirectoryName,String tenantId, String replacingTenantId) {
 	// TODO Auto-generated method stub
-	// 
-	generateSSTable();
-	transferSSTable();
-    }
-
-    // this will only transfer the sstables
-    private static void transferOnly(String SSTableFileName) {
-	// TODO Auto-generated method stub
-	transferSSTable();
-    }
-
-    private static void generateModifieSSTables(){
-	//TODO
-    }
-
-    // this will only generate SSTable for given tenant
-    private static void filterOnly(String SSTableFileName, String tenantId) {
-	// TODO Auto-generated method stub
-	// create modified Dir
-	System.out.println("It was inside the function but not the if condition");
-	Descriptor descriptor = getDescriptor(SSTableFileName);
-	validationOfCf(descriptor, SSTableFileName);
-
-	Keyspace keyspace = Keyspace.open(descriptor.ksname);
-
-	String columnFamilyName = descriptor.cfname;
-	if (descriptor.cfname.contains(".")) {
-	    String[] parts = descriptor.cfname.split("\\.", 2);
-	    columnFamilyName = parts[0];
-	}
-
-	
-	if (!isLogDirectoryCreated) {
-	    isLogDirectoryCreated = initializeLogDirectory(keyspace.getName(), columnFamilyName, LOGFILTEREDDIRPATH);
-	    System.out.println("yes it was inside the mode thing");
-	}
-	
-	// create base directory
-	String modifiedSSTablePath = BASEMODIFIEDDIR + "/data" + "/" + TIMESTAMP + "/" + keyspace.getName() + "/" + columnFamilyName+"/"
-		+ WapTranspoUtil.getDataDirectoryName(SSTableFileName);
-	String modifiedDataDirectoryPath = modifiedSSTablePath.substring(0, modifiedSSTablePath.lastIndexOf("/"));	
-
-	File modifiedDataDirectory = WapTranspoUtil.createDirectory(modifiedDataDirectoryPath);
-	printAndWriteToFile(logStdOut, "Generating SSTable:- ");
-	printAndWriteToFile(logStdOut, "---------------------");
-	printAndWriteToFile(logStdOut, modifiedSSTablePath);
-	printAndWriteToFile(logStdOut, "");
-	printAndWriteToFile(logStdOut, "");
-
-	ColumnFamilyStore cfStore = null;
-
-	try {
-	    cfStore = keyspace.getColumnFamilyStore(columnFamilyName);
-	} catch (IllegalArgumentException e) {
-	    System.err.println(String.format(
-		    "The provided column family is not part of this cassandra keyspace: keyspace = %s, column family = %s",
-		    descriptor.ksname, descriptor.cfname));
+	if(replacingTenantId==null){
+	    System.out.println("******************************************");
+	    System.err.println("replacing tenantId can't be null");
+	    System.out.println("use option -replaceWith <modifiedTenantId>");
+	    System.out.println("******************************************");
+	    System.exit(1);
+	}else if(replacingTenantId.isEmpty()){
+	    System.out.println("*********************************");
+	    System.err.println("replacing tenantId can't be empty");
+	    System.out.println("*********************************");
 	    System.exit(1);
 	}
 
-	try {
-	    readSSTable(descriptor, cfStore.metadata, tenantId, tenantId, modifiedSSTablePath);
-	} catch (IOException e) {
-	    e.printStackTrace(System.err);
+	int totalProcessedSSTables =0; 
+	int totalSSTableForgivenCF=0;
+	int totalFailureSSTables=0;
+	
+	List<String> listOfAllSSTables = WapTranspoUtil.generateAbsolutePathOfAllSSTables(SSTableDirectoryName);
+	totalSSTableForgivenCF = listOfAllSSTables.size();
+	if(listOfAllSSTables.size()==0){
+	    System.err.println("You are passing wrong directory: please pass prpoer path");
+	    System.exit(1);
 	}
 
-	generateSSTable();
+	for(String SSTableFileName : listOfAllSSTables){
+
+
+	    Descriptor descriptor = getDescriptor(SSTableFileName);
+	    validationOfCf(descriptor, SSTableFileName);
+
+	    Keyspace keyspace = Keyspace.open(descriptor.ksname);
+
+	    String columnFamilyName = descriptor.cfname;
+	    if (descriptor.cfname.contains(".")) {
+		String[] parts = descriptor.cfname.split("\\.", 2);
+		columnFamilyName = parts[0];
+	    }
+
+
+	    // here we also initialize our file in which we will redirect our all logs
+	    if (!isLogDirectoryCreated) {
+		isLogDirectoryCreated = initializeLogDirectory(keyspace.getName(), columnFamilyName, LOGGENERATEDDIRPATH);
+	    }
+
+	    // create base directory
+	    String modifiedSSTablePath = BASEMODIFIEDDIR + "/data" + "/" + TIMESTAMP + "/" + keyspace.getName() + "/" + columnFamilyName+"/"
+		    + WapTranspoUtil.getDataDirectoryName(SSTableFileName);
+	    String modifiedDataDirectoryPath = modifiedSSTablePath.substring(0, modifiedSSTablePath.lastIndexOf("/"));	
+	    WapTranspoUtil.createDirectory(modifiedDataDirectoryPath);
+	    printAndWriteToFile(logStdOut, "Generating SSTable for tenant "+replacingTenantId+"  :- ");
+	    printAndWriteToFile(logStdOut, "----------------------------------------------");
+	    printAndWriteToFile(logStdOut, modifiedSSTablePath);
+	    printAndWriteToFile(logStdOut, "");
+	    printAndWriteToFile(logStdOut, "");
+
+
+	    ColumnFamilyStore cfStore = null;
+
+	    try {
+		cfStore = keyspace.getColumnFamilyStore(columnFamilyName);
+	    } catch (IllegalArgumentException e) {
+		System.err.println(String.format(
+			"The provided column family is not part of this cassandra keyspace: keyspace = %s, column family = %s",
+			descriptor.ksname, descriptor.cfname));
+		System.exit(1);
+	    }
+
+	    try {
+		readSSTable(descriptor, cfStore.metadata, tenantId, replacingTenantId, modifiedSSTablePath);
+		totalProcessedSSTables++;
+	    } catch (IOException e) {
+		totalFailureSSTables++;
+		e.printStackTrace(System.err);
+	    }
+	}
+	printCurrentProgress(totalProcessedSSTables, totalSSTableForgivenCF, totalFailureSSTables);
+
+    }
+
+    // this will only transfer the sstables
+    private static void transferOnly(String SSTableDirectoryName, String nodes, String targetKeyspace) {
+	int totalProcessedSSTables =0; 
+	int totalSSTableForgivenCF=0;
+	int totalFailureSSTables=0;
+
+	List<String> listOfALlSSTables = WapTranspoUtil.generateAbsolutePathOfAllSSTables(SSTableDirectoryName);
+	totalSSTableForgivenCF = listOfALlSSTables.size();
+	
+	if(totalSSTableForgivenCF==0){
+	    System.err.println("There is not a single sstable to transfer..in dir "+SSTableDirectoryName);
+	    System.exit(1);
+	}
+	
+	Descriptor descriptor = getDescriptor(listOfALlSSTables.get(0));
+
+
+	// to initialize log dir/file
+	if(!isLogDirectoryCreated){
+	    isLogDirectoryCreated = initializeLogDirectory(descriptor.ksname, descriptor.cfname, LOGTRANSPODDIRPATH);
+	}
+
+	printCurrentProgress("transferrinig", SSTableDirectoryName);
+	System.out.println("I'm going to pass the modified keyspace :: " + targetKeyspace);
+	String[] args = new String[] {"-d " + nodes, "-k"+targetKeyspace, SSTableDirectoryName };
+	System.out.println(args.toString());
+	try{
+	    WapBulkLoader.main(args, logStdOut);
+	}catch(Throwable e){
+	    //TODO
+	    // copy all failure sstable to failure dir.
+	    System.err.println("Failed to transfer sstable :: "  + SSTableDirectoryName);
+	}
+	System.out.println("all sstable has been transferred successfully!!");
+    }
+
+
+    // this will only generate SSTable for given tenant
+    private static void filterOnly(String SSTableDirectoryName, String tenantId) {
+	// TODO Auto-generated method stub
+	int totalProcessedSSTables =0; 
+	int totalSSTableForgivenCF=0;
+	int totalFailureSSTables=0;
+	
+	List<String> listOfAllSSTables = WapTranspoUtil.generateAbsolutePathOfAllSSTables(SSTableDirectoryName);
+
+	if(listOfAllSSTables.size()==0){
+	    System.err.println("You are passing wrong directory: please pass prpoer path");
+	    System.exit(1);
+	}
+	totalSSTableForgivenCF = listOfAllSSTables.size();
+	for(String SSTableFileName : listOfAllSSTables){
+	    Descriptor descriptor = getDescriptor(SSTableFileName);
+	    validationOfCf(descriptor, SSTableFileName);
+
+	    Keyspace keyspace = Keyspace.open(descriptor.ksname);
+
+	    String columnFamilyName = descriptor.cfname;
+	    if (descriptor.cfname.contains(".")) {
+		String[] parts = descriptor.cfname.split("\\.", 2);
+		columnFamilyName = parts[0];
+	    }
+
+
+	    if (!isLogDirectoryCreated) {
+		isLogDirectoryCreated = initializeLogDirectory(keyspace.getName(), columnFamilyName, LOGFILTEREDDIRPATH);
+	    }
+
+	    // create base directory
+	    String modifiedSSTablePath = BASEFILTEREDDDIR + "/data" + "/" + TIMESTAMP + "/" + keyspace.getName() + "/" + columnFamilyName+"/"
+		    + WapTranspoUtil.getDataDirectoryName(SSTableFileName);
+	    String modifiedDataDirectoryPath = modifiedSSTablePath.substring(0, modifiedSSTablePath.lastIndexOf("/"));	
+	    WapTranspoUtil.createDirectory(modifiedDataDirectoryPath);
+	    printAndWriteToFile(logStdOut, "Filtering SSTable for tenant "+tenantId+"  :- ");
+	    printAndWriteToFile(logStdOut, "----------------------------------------------");
+	    printAndWriteToFile(logStdOut, modifiedSSTablePath);
+	    printAndWriteToFile(logStdOut, "");
+	    printAndWriteToFile(logStdOut, "");
+
+	    ColumnFamilyStore cfStore = null;
+
+	    try {
+		cfStore = keyspace.getColumnFamilyStore(columnFamilyName);
+	    } catch (IllegalArgumentException e) {
+		System.err.println(String.format(
+			"The provided column family is not part of this cassandra keyspace: keyspace = %s, column family = %s",
+			descriptor.ksname, descriptor.cfname));
+		System.exit(1);
+	    }
+
+	    try {
+		totalProcessedSSTables++;
+		readSSTable(descriptor, cfStore.metadata, tenantId, modifiedSSTablePath);
+	    } catch (IOException e) {
+		totalFailureSSTables++;
+		e.printStackTrace(System.err);
+	    }
+	}
+	printCurrentProgress(totalProcessedSSTables, totalSSTableForgivenCF, totalFailureSSTables);
     }
 
     private static void generateSSTable(){
-
+	// TODO refactor in future
     }
 
-    private static void transferSSTable(){
-
+    private static void transferSSTable(String args){
+	//TODO call our bulkloader
+	// add change in keyspace @apply zhao's patch
     }
 
     private static Descriptor getDescriptor(String SSTableFileName){
@@ -451,7 +570,7 @@ public class WapTranspoGenerateOnly {
 
 
     /**
-     * Export an SSTable and write the resulting JSON to a PrintStream.
+     * This is to read SSTable and re generate sstable after replacing tenantId
      *
      * @param descthe descriptor of the sstable to read from
      * @param outs PrintStream to write the output to
@@ -464,6 +583,7 @@ public class WapTranspoGenerateOnly {
 	readSSTable(SSTableReader.open(desc), metadata, tenantId, replacingTenantId, modifiedSSTablePath);
     }
 
+
     static void readSSTable(SSTableReader reader, CFMetaData metadata, String tenantId, String replacingTenantId, String modifiedSSTablePath)
 	    throws IOException {
 	SSTableIdentityIterator row;
@@ -472,19 +592,15 @@ public class WapTranspoGenerateOnly {
 
 
 	try {
-	    // collecting keys to export
 	    while (scanner.hasNext()) {
 		row = (SSTableIdentityIterator) scanner.next();
 		DecoratedKey decoratedKey = row.getKey();
 		if (!WapTranspoUtil.doesContainTargetKey(tenantId, decoratedKey))
 		    continue;
 
-		// here we manipulate the decorated keys
 		String modifiedDecoratedKey = row.getColumnFamily().metadata().getKeyValidator().getString(row.getKey().getKey()).replaceAll(tenantId,
 			replacingTenantId);
 		sortedModifiedDecoratedKey.put(modifyDecoratedKey(row, modifiedDecoratedKey),row.getKey());
-		// convert string thing
-		//serializeRow(row, row.getKey(), tenantId, replacingTenantId);
 		keyCountToImport++;
 	    }
 
@@ -524,6 +640,80 @@ public class WapTranspoGenerateOnly {
 	    reader.selfRef().release();
 	}
     }
+
+
+    /**
+     * This method is to filter the sstable for given tenant
+     * first we count the number of keys in sstable for given tenantId If it is 0 then we skip this SSTable else we write all those rows in new sstable
+     * 
+     * @param desc
+     * @param metadata
+     * @param tenantId
+     * @param modifiedSSTablePath
+     * @throws IOException
+     */
+    private static void readSSTable(Descriptor desc, CFMetaData metadata, String tenantId, String modifiedSSTablePath)
+	    throws IOException {
+	readSSTable(SSTableReader.open(desc), metadata, tenantId,  modifiedSSTablePath);
+    }
+
+
+    static void readSSTable(SSTableReader reader, CFMetaData metadata, String tenantId, String modifiedSSTablePath)
+	    throws IOException {
+	SSTableIdentityIterator row;
+	ISSTableScanner scanner = reader.getScanner();
+	keyCountToImport=0;
+	try {
+	    while (scanner.hasNext()) {
+		row = (SSTableIdentityIterator) scanner.next();
+		DecoratedKey decoratedKey = row.getKey();
+		if (!WapTranspoUtil.doesContainTargetKey(tenantId, decoratedKey))
+		    continue;
+
+		keyCountToImport++;
+	    }
+
+	    // writing back to sstable
+	    if(keyCountToImport!=0){
+		scanner = reader.getScanner();
+		SSTableWriter writer = new SSTableWriter(modifiedSSTablePath, keyCountToImport,
+			ActiveRepairService.UNREPAIRED_SSTABLE);
+		while(scanner.hasNext()){
+
+		    row = (SSTableIdentityIterator) scanner.next();
+		    DecoratedKey decoratedKey = row.getKey();
+		    if (!WapTranspoUtil.doesContainTargetKey(tenantId, decoratedKey))
+			continue;
+
+		    Iterator<OnDiskAtom> atomIterator = row;
+		    List<Object> columnsForGivenRow = new ArrayList<Object>();
+		    while(atomIterator.hasNext()){
+			columnsForGivenRow.add(serializeAtom(atomIterator.next(), metadata));
+		    }
+		    ColumnFamily cfamily = ArrayBackedSortedColumns.factory.create(metadata.ksName,metadata.cfName);
+		    addColumnsToCF(columnsForGivenRow, cfamily);
+		    writer.append(decoratedKey,cfamily);
+		    cfamily.clear();
+		}
+		writer.closeAndOpenReader().selfRef().release();
+	    }
+	} finally {
+	    if(keyCountToImport==0){
+		System.out.println("##################################################################");
+		System.out.println("there was no data for tenant "+tenantId+" in SSTable, Skipping....");
+		System.out.println("##################################################################");
+		System.out.println();
+	    }
+	    keyCountToImport=0;
+	    scanner.close();
+	    reader.selfRef().release();
+	}
+    }
+
+
+
+
+
 
 
     /**
@@ -730,4 +920,20 @@ public class WapTranspoGenerateOnly {
 	printAndWriteToFile(logStdOut, "");
 	printAndWriteToFile(logStdOut, "");
     }
+
+    /**
+     * To print progress after each SSTable processed
+     * 
+     * @param int total no of SSTables
+     * @param int total no of processed SSTables
+     * @param int total failure of SSTables 
+     */
+    public static void printCurrentProgress(int totalProcessedSSTables, int totalSSTableForgivenCF, int totalFailureSSTables){
+	printAndWriteToFile(logStdOut, "==========================================================================================");
+	printAndWriteToFile(logStdOut, "Total Processed", "Total SSTables","total failure", "total %");
+	printAndWriteToFile(logStdOut, totalProcessedSSTables, totalSSTableForgivenCF, totalFailureSSTables, ((totalProcessedSSTables+totalFailureSSTables)*100)/totalSSTableForgivenCF);
+	printAndWriteToFile(logStdOut, "==========================================================================================");
+
+    }
+
 }

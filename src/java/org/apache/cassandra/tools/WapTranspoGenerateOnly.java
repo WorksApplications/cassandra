@@ -127,6 +127,7 @@ public class WapTranspoGenerateOnly {
     private static final String NODE_ADDRESS = "d";
     private static final String TARGET_KEYSPACE = "k";
     private static final String MODE = "mode";
+    private static final String GETTIMESTAMP = "timestamp";
     private static final Options options = new Options();
     private static CommandLine cmd;
     private static Integer keyCountToImport = 0;
@@ -162,6 +163,9 @@ public class WapTranspoGenerateOnly {
 	// this is to ensure at which mode we want to use this utility
 	Option mode = new Option(MODE, true, "to get mode");
 	options.addOption(mode);
+
+	Option timestamp = new Option(GETTIMESTAMP, true, "to get timestamp");
+	options.addOption(timestamp);
 
     }
 
@@ -261,7 +265,7 @@ public class WapTranspoGenerateOnly {
     public static void main(String[] args) {
 	long startTime = System.currentTimeMillis();
 	String usage = String.format(
-		"Usage: %s -k KS -d <node1,node2,node3> -tenantId [tenant1] -replaceWith [tenant1Staging] <directoryPathForSSTables> %n",
+		"Usage: %s -k KS -d <node1,node2,node3> -tenantId [tenant1] -replaceWith [tenant1Staging] -timestamp <timestamp> <directoryPathForSSTables> %n",
 		SSTableExport.class.getName());
 
 	String modeUsage = String.format("There are three mode we support \n"
@@ -310,13 +314,20 @@ public class WapTranspoGenerateOnly {
 	    System.out.println("------------------------------------------------------------------------------");
 	}
 
+	
+	if(!cmd.hasOption(GETTIMESTAMP)){
+	    System.out.println("----------------------------------------------------------");
+	    System.out.println("Since you haven't entered the timestamp it will generate by it's own");
+	    System.out.println("----------------------------------------------------------");
+	}
+	
 	String tenantId = cmd.getOptionValue(TENANT_ID);
 	String replacingTenantId = cmd.getOptionValue(REPLACE_WITH);
 	String SSTableDirectoryName = new File(cmd.getArgs()[0]).getAbsolutePath();
 	String nodes = cmd.getOptionValue(NODE_ADDRESS);
 	String mode = cmd.getOptionValue(MODE);
 	String targetKeyspace = cmd.getOptionValue(TARGET_KEYSPACE);
-	
+	TIMESTAMP = cmd.getOptionValue(GETTIMESTAMP);
 
 	// this is to set mode for given task
 
@@ -468,6 +479,7 @@ public class WapTranspoGenerateOnly {
 	printAndWriteToFile(logStdOut, "");
 	printAndWriteToFile(logStdOut, "");
 	printCurrentProgress("transferrinig", SSTableDirectoryName);
+	System.out.println("going to stream all these nodes :" + nodes);
 	String[] args = new String[] {"-d " + nodes, "-k"+targetKeyspace, SSTableDirectoryName };
 	try{
 	    WapBulkLoader.main(args, logStdOut);

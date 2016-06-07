@@ -1,9 +1,9 @@
-#!/bin/bash
+#!/bin/bash 
 #Author : Varun Barala
 #Purpose: This script is just an wrapper on the top of original SSTable utility
 
 dataDir='/var/lib/cassandra/data'
-
+timeStampToGenerateDir='752201556'
 # this is to initialize with minimum
 #timeStamp='752201556'
 # Param1:  --tenantId <tenantId>
@@ -16,16 +16,45 @@ tenantId=''
 replaceWith=''
 nodeAddress=''
 keyspaceName=''
+targetKeyspace=''
 cfNames=''
+mode=''
+
 
 # this is to initialize the data directory 
 initDataDir(){
-	echo "please enter your data directory, example :-> /var/lib/cassandra/data"
+	echo "please enter your data directory, example :-> /var/lib/cassandra/data/keyspace"
 	echo "---------------------------------------------------------------------"
 	echo ""
 	read -p "[input directory]:-" dataDir
 	echo ""
 	echo ""
+}
+
+
+
+# mode validation whether user has entered the correct mode or not
+modeValidation(){
+	#echo "$1 value of mode"
+	if [ "$1" == "G" ] || [ "$1" == "F" ] || [ "$1" == "GT" ]; then
+		echo "processing............"
+	else
+		echo "You have entered wrong mode:: " $1
+		initMode
+	fi
+}
+
+
+
+# this is to get mode 
+initMode(){
+	echo "We support four modes===================================="
+	echo "mode: F -> to just filter the data for given any tenant"
+	echo "mode: G -> to just generate the data for modified tenantId"
+	echo "mode: GT -> to generate as well as transfer the data"
+	echo "========================================================="
+	read -p "Please choose a mode:: " mode
+	modeValidation $mode
 }
 
 
@@ -50,7 +79,6 @@ checkValidity(){
 	fi
 }
 
-
 getParamsForUtility(){
 	read -p "enter the tenantId: " tenantId
 	read -p "enter replacing tenantId: " replaceWith
@@ -65,9 +93,87 @@ transferAll(){
 	do
 		for i in "${ADDR[@]}";
 		do
-			./waptranspoutility -d $nodeAddress --tenantId $tenantId --replaceWith $replaceWith $i			
+			sudo ./waptranspoutility -d $nodeAddress --tenantId $tenantId --replaceWith $replaceWith $i			
 		done
 	done <<< "$allSnapshotDir"
+}
+
+moveLatestDirWithLatestTimeStamp(){
+	timeStampToGenerateDir=`date +%s`
+	sudo mkdir -p modifiedData/Transferred/data/$timeStampToGenerateDir
+	sudo mv modifiedData/Generated/data/$timeStamp modifiedData/Transferred/data/$timeStampToGenerateDir
+}
+
+
+getFilterOnlyParameters(){
+	echo "Please enter all relevant parameters for filter only mode:"
+	echo "----------------------------------------------------------"
+	read -p "please enter the tenantId for which you want to filter the data:: " tenantId
+}
+
+getGenerateOnlyParameters(){
+	echo "Please enter all relevant parameters for generate only mode:"
+	echo "------------------------------------------------------------"
+	read -p "please enter the current keyspace name:: " keyspaceName
+	read -p "please enter the tenantId:: " tenantId
+	read -p "please enter the replacing tenantId:: " replaceWith
+	read -p "Please enter the target keyspace:: " targetKeyspace
+}
+
+
+getGenerateAndTransferOnly(){
+	echo "Please enter all relevant parameters for generate only mode:"
+	echo "------------------------------------------------------------"
+	read -p "please enter the current keyspace name:: " keyspaceName
+	read -p "please enter the tenantId:: " tenantId
+	read -p "please enter the replacing tenantId:: " replaceWith
+	read -p "Please enter the target keyspace:: " targetKeyspace
+	read -p "please enter all the nodes:: " nodeAddress
+}
+
+filterOnly(){
+	 ## get the parameters
+	 getFilterOnlyParameters
+ 	 allSnapshotDir=`find $dataDir -type d -name $timeStamp`
+         while IFS=' ' read -ra ADDR; 
+         do
+         	for i in "${ADDR[@]}";
+                do
+                         sudo ./waptranspoutility -mode $mode -d 172.26.152.172 --tenantId $tenantId -timestamp $timeStamp $i
+                done
+        done <<< "$allSnapshotDir"		
+}
+
+
+generateOnly(){
+	findLatestTimeStamp
+ 	getGenerateOnlyParameters
+	# hard code it here
+	#allTargetDir=`ls modifiedData/Filtered/data/"$timeStamp"/$keyspaceName`
+	allTargetDir=`find modifiedData/Filtered/data/$timeStamp/$keyspaceName/* -maxdepth 0 -type d`
+	while IFS=' ' read -ra ADDR;
+	do
+		for i in "${ADDR[@]}"
+		do
+			sudo ./waptranspoutility -k $targetKeyspace -mode $mode -d 172.26.152.172 --tenantId $tenantId --replaceWith $replaceWith -timestamp $timeStamp $i
+		done
+	done <<< "$allTargetDir"
+}
+
+generateAndTransferOnly(){
+ # get all nodes
+ 	findLatestTimeStamp
+	getGenerateAndTransferOnly
+	allTargetDir=`find modifiedData/Filtered/data/$timeStamp/$keyspaceName/* -maxdepth 0 -type d`
+	while IFS=' ' read -ra ADDR;
+	do
+		for i in "${ADDR[@]}"
+		do
+			sudo ./waptranspoutility -k $targetKeyspace -mode $mode -d "$nodeAddress" --tenantId $tenantId --replaceWith $replaceWith -timestamp $timeStamp $i
+		done
+	done <<< "$allTargetDir"
+	
+	moveLatestDirWithLatestTimeStamp
 }
 
 
@@ -78,7 +184,7 @@ transferFew(){
 	do
 		for i in "${ADDR[@]}";
 		do
-			./waptranspoutility -d $nodeAddress --tenantId $tenantId --replaceWith $replaceWith $i
+			sudo ./waptranspoutility -d "$nodeAddress" --tenantId $tenantId --replaceWith $replaceWith $i
 		done
 	done <<< "$1"
 }
@@ -86,26 +192,33 @@ transferFew(){
 
 
 getKeySpaceInfo(){
-	read -p "Want to  tansfer whole keyspace [Y/N]:" wholeKS
-	if [ $wholeKS = 'Y' ] || [ $wholeKS = 'y' ]
-	then
-		read -p "please enter the keyspace name: " keyspaceName
-		transferAll $keyspaceName
-	else 
-		read -p "please enter all the CF name , separated| [CF]: " cfNames
-		transferFew $cfNames
-	fi
+	#read -p "Transfer whole keyspace [Y/N]:" wholeKS
+	#if [ $wholeKS = 'Y' ] || [ $wholeKS = 'y' ]
+	#then
+	read -p "please enter name of current keyspace: " keyspaceName
+		#transferAll $keyspaceName
+	#else 
+		#read -p "please enter all the CF name , separated| [CF]: " cfNames
+		#transferFew $cfNames
+	#fi
 
 }
 
 getLatestTimeStamp(){
 	# this will give you the latest timestamp if there does exist some snapshot 
 	timeStamp=`ls $1 -1 | tail -1`	
-	echo "latest wsnapshot found : $timeStamp"
+	#echo "latest snapshot found : $timeStamp"
 	checkValidity $timeStamp
 	getKeySpaceInfo
+
+	if [ "$mode" == 'F' ]; then
+		filterOnly
+	elif [ "$mode" == 'G' ]; then
+		generateOnly
+	elif [ "$mode" == 'GT' ]; then
+		generateAndTransferOnly
+	fi
 	# now get option for whole keyspace or some tables
-	echo "Ohh it stored as a timestamp but now Q is how to compare the dir name"	
 }
 
 getLatestSnapshot(){
@@ -124,22 +237,36 @@ getLatestSnapshot(){
 }
 
 
+findLatestTimeStamp(){
+	timeStamp=`ls modifiedData/Filtered/data/ | tail -1` 
+#	if [ "$mode" == 'F' ]; then
+#                filterOnly
+#        elif [ "$mode" == 'G' ]; then
+#                generateOnly
+#        elif [ "$mode" == 'GT' ]; then
+#                generateAndTransferOnly
+#        fi
+}
+
 # If they have recently taken the snapshot then We will -> get latest time-stamp or 
 # else we will take snapshot
 snapshot(){
-	read -p "Did you take the snapshot [Y/N]:" didSnapshot
+	read -p "Did you take the snapshot [Y/N/SKIP]:" didSnapshot
 	echo ""
 	if [ $didSnapshot = 'Y' ] || [ $didSnapshot = 'y' ];
 	then
 		getLatestSnapshot
 		# TODO get latest snapshot directory
 		# check whether snapshot for entire keyspace has been taken or not
-	else
-		echo "I'm going to take snapshot and It will take little time!!"
+	elif [ $didSnapshot = 'N' ] || [ $didSnapshot = 'n' ]; then
+		echo "Going to take snapshot and It will take little time!!"
 		../../bin/nodetool snapshot -- $keyspaceName
 		getLatestSnapshot		
 		# take snapshot and run the above function to get latest keyspace 
 		# wait after snapshot command 
+	else
+		echo "going to skip this step"
+		findLatestTimeStamp
 	fi
 }
 
@@ -147,9 +274,22 @@ runMainUtility(){
 	echo "here we will read all related paramter"
 }
 
+setCurrentTimeStamp(){
+	timeStampToGenerateDir=`date +%s`
+	# TODO current plan is to generate corresponding to given snapshot
+}
+
 main(){
-	initDataDir
-	snapshot	
+	initMode
+	if [ "$mode" == 'G' ]; then
+		generateOnly
+	elif [ "$mode" == 'GT' ]; then
+		echo "IT was here"
+		generateAndTransferOnly
+	else 
+		initDataDir
+		snapshot
+	fi	
 }
 
 main

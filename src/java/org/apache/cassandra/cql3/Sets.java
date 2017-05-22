@@ -35,6 +35,8 @@ import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.transport.Server;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.FBUtilities;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Static helper methods and classes for sets.
@@ -239,13 +241,15 @@ public abstract class Sets
 
     public static class Setter extends Operation
     {
+    	private static final Logger logger = LoggerFactory.getLogger("SetCollectionType");
         public Setter(ColumnDefinition column, Term t)
         {
-            super(column, t);
+        	super(column, t);
         }
 
         public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
         {
+        	logger.info("using set collection type for cf :: " + cf);
             if (column.type.isMultiCell())
             {
                 // delete + add

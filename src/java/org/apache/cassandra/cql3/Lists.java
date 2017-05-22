@@ -289,6 +289,7 @@ public abstract class Lists
 
     public static class Setter extends Operation
     {
+    	private static final Logger logger = LoggerFactory.getLogger("ListCollectionType");
         public Setter(ColumnDefinition column, Term t)
         {
             super(column, t);
@@ -296,6 +297,7 @@ public abstract class Lists
 
         public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
         {
+        	logger.info("using list collection type for cf :: " + cf);
             if (column.type.isMultiCell())
             {
                 // delete + append
@@ -367,6 +369,7 @@ public abstract class Lists
 
     public static class Appender extends Operation
     {
+    	
         public Appender(ColumnDefinition column, Term t)
         {
             super(column, t);

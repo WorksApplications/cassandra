@@ -38,6 +38,8 @@ import org.apache.cassandra.serializers.MarshalException;
 import org.apache.cassandra.transport.Server;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.Pair;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Static helper methods and classes for maps.
@@ -264,6 +266,7 @@ public abstract class Maps
 
     public static class Setter extends Operation
     {
+    	private static final Logger logger = LoggerFactory.getLogger("MapCollectionType");
         public Setter(ColumnDefinition column, Term t)
         {
             super(column, t);
@@ -271,7 +274,8 @@ public abstract class Maps
 
         public void execute(ByteBuffer rowKey, ColumnFamily cf, Composite prefix, UpdateParameters params) throws InvalidRequestException
         {
-            if (column.type.isMultiCell())
+        	logger.info("using map collection type for cf :: " + cf);
+        	if (column.type.isMultiCell())
             {
                 // delete + put
                 CellName name = cf.getComparator().create(prefix, column);

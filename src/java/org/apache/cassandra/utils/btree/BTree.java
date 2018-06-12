@@ -21,12 +21,12 @@ package org.apache.cassandra.utils.btree;
 import java.util.*;
 import java.util.function.Consumer;
 
-import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Ordering;
 
+import io.netty.util.Recycler;
 import org.apache.cassandra.utils.ObjectSizes;
 
 import static com.google.common.collect.Iterables.concat;
@@ -201,14 +201,12 @@ public class BTree
 
     public static <V> Iterator<V> iterator(Object[] btree, Dir dir)
     {
-        return isLeaf(btree) ? new LeafBTreeSearchIterator<>(btree, null, dir)
-                             : new FullBTreeSearchIterator<>(btree, null, dir);
+        return new BTreeSearchIterator<>(btree, null, dir);
     }
 
     public static <V> Iterator<V> iterator(Object[] btree, int lb, int ub, Dir dir)
     {
-        return isLeaf(btree) ? new LeafBTreeSearchIterator<>(btree, null, dir, lb, ub)
-                             : new FullBTreeSearchIterator<>(btree, null, dir, lb, ub);
+        return new BTreeSearchIterator<>(btree, null, dir, lb, ub);
     }
 
     public static <V> Iterable<V> iterable(Object[] btree)
@@ -236,8 +234,7 @@ public class BTree
      */
     public static <K, V> BTreeSearchIterator<K, V> slice(Object[] btree, Comparator<? super K> comparator, Dir dir)
     {
-        return isLeaf(btree) ? new LeafBTreeSearchIterator<>(btree, comparator, dir)
-                             : new FullBTreeSearchIterator<>(btree, comparator, dir);
+        return new BTreeSearchIterator<>(btree, comparator, dir);
     }
 
     /**
@@ -251,20 +248,6 @@ public class BTree
     public static <K, V extends K> BTreeSearchIterator<K, V> slice(Object[] btree, Comparator<? super K> comparator, K start, K end, Dir dir)
     {
         return slice(btree, comparator, start, true, end, false, dir);
-    }
-
-    /**
-     * @param btree      the tree to iterate over
-     * @param comparator the comparator that defines the ordering over the items in the tree
-     * @param startIndex      the start index of the range to return, inclusive
-     * @param endIndex        the end index of the range to return, inclusive
-     * @param dir   if false, the iterator will start at the last item and move backwards
-     * @return           an Iterator over the defined sub-range of the tree
-     */
-    public static <K, V extends K> BTreeSearchIterator<K, V> slice(Object[] btree, Comparator<? super K> comparator, int startIndex, int endIndex, Dir dir)
-    {
-        return isLeaf(btree) ? new LeafBTreeSearchIterator<>(btree, comparator, dir, startIndex, endIndex)
-                             : new FullBTreeSearchIterator<>(btree, comparator, dir, startIndex, endIndex);
     }
 
     /**
@@ -287,8 +270,7 @@ public class BTree
                                       end == null ? Integer.MAX_VALUE
                                                   : endInclusive ? floorIndex(btree, comparator, end)
                                                                  : lowerIndex(btree, comparator, end));
-        return isLeaf(btree) ? new LeafBTreeSearchIterator<>(btree, comparator, dir, inclusiveLowerBound, inclusiveUpperBound)
-                             : new FullBTreeSearchIterator<>(btree, comparator, dir, inclusiveLowerBound, inclusiveUpperBound);
+        return new BTreeSearchIterator<>(btree, comparator, dir, inclusiveLowerBound, inclusiveUpperBound);
     }
 
     /**
@@ -787,14 +769,34 @@ public class BTree
         return 1 + lookupSizeMap(root, childIndex - 1);
     }
 
+    final static Recycler<Builder> builderRecycler = new Recycler<Builder>()
+    {
+        protected Builder newObject(Handle handle)
+        {
+            return new Builder(handle);
+        }
+    };
+
     public static <V> Builder<V> builder(Comparator<? super V> comparator)
     {
-        return new Builder<>(comparator);
+        Builder<V> builder = builderRecycler.get();
+        builder.reuse(comparator);
+
+        return builder;
     }
 
+    public static <V> Builder<V> builder(Comparator<? super V> comparator, boolean sortAndFilter)
+    {
+        Builder<V> builder = builderRecycler.get();
+        builder.reuse(comparator);
+        builder.auto = sortAndFilter;
+
+        return builder;
+    }
+    
     public static <V> Builder<V> builder(Comparator<? super V> comparator, int initialCapacity)
     {
-        return new Builder<>(comparator, initialCapacity);
+        return builder(comparator);
     }
 
     public static class Builder<V>
@@ -823,23 +825,12 @@ public class BTree
         boolean detected = true; // true if we have managed to cheaply ensure sorted (+ filtered, if resolver == null) as we have added
         boolean auto = true; // false if the user has promised to enforce the sort order and resolve any duplicates
         QuickResolver<V> quickResolver;
+        final Recycler.Handle recycleHandle;
 
-        protected Builder(Comparator<? super V> comparator)
-        {
-            this(comparator, 16);
-        }
 
-        protected Builder(Comparator<? super V> comparator, int initialCapacity)
+        private Builder(Recycler.Handle handle)
         {
-            if (initialCapacity == 0)
-                initialCapacity = 16;
-            this.comparator = comparator;
-            this.values = new Object[initialCapacity];
-        }
-
-        @VisibleForTesting
-        public Builder()
-        {
+            this.recycleHandle = handle;
             this.values = new Object[16];
         }
 
@@ -851,6 +842,7 @@ public class BTree
             this.detected = builder.detected;
             this.auto = builder.auto;
             this.quickResolver = builder.quickResolver;
+            this.recycleHandle = null;
         }
 
         /**
@@ -868,17 +860,30 @@ public class BTree
             return this;
         }
 
-        public void reuse()
+        public void recycle()
         {
-            reuse(comparator);
+            if (recycleHandle != null)
+            {
+                this.cleanup();
+                builderRecycler.recycle(this, recycleHandle);
+            }
         }
 
-        public void reuse(Comparator<? super V> comparator)
+        /**
+         * Cleans up the Builder instance before recycling it.
+         */
+        private void cleanup()
         {
-            this.comparator = comparator;
+            quickResolver = null;
             Arrays.fill(values, null);
             count = 0;
             detected = true;
+            auto = true;
+        }
+
+        private void reuse(Comparator<? super V> comparator)
+        {
+            this.comparator = comparator;
         }
 
         public Builder<V> auto(boolean auto)
@@ -1105,9 +1110,16 @@ public class BTree
 
         public Object[] build()
         {
-            if (auto)
-                autoEnforce();
-            return BTree.build(Arrays.asList(values).subList(0, count), UpdateFunction.noOp());
+            try
+            {
+                if (auto)
+                    autoEnforce();
+                return BTree.build(Arrays.asList(values).subList(0, count), UpdateFunction.noOp());
+            }
+            finally
+            {
+                this.recycle();
+            }
         }
     }
 

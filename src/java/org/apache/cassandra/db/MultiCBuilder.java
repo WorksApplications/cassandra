@@ -23,7 +23,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.NavigableSet;
 
-import org.apache.cassandra.schema.ColumnMetadata;
+import org.apache.cassandra.config.ColumnDefinition;
 import org.apache.cassandra.utils.ByteBufferUtil;
 import org.apache.cassandra.utils.btree.BTreeSet;
 
@@ -32,6 +32,12 @@ import org.apache.cassandra.utils.btree.BTreeSet;
  */
 public abstract class MultiCBuilder
 {
+	/**
+	 * In  case of in condition disable sorting, default true
+	 * 
+	 */
+	protected boolean sortAndFilter = true;
+	
     /**
      * The table comparator.
      */
@@ -77,6 +83,13 @@ public abstract class MultiCBuilder
              : new OneClusteringBuilder(comparator);
     }
 
+    /**
+     * Creates a new empty {@code MultiCBuilder}
+     */
+    public static MultiCBuilder createForInCondition(ClusteringComparator comparator)
+    {
+    	return new MultiClusteringBuilder(comparator).disableSorting();
+    }
     /**
      * Adds the specified element to all the clusterings.
      * <p>
@@ -177,7 +190,7 @@ public abstract class MultiCBuilder
     public abstract NavigableSet<ClusteringBound> buildBoundForSlice(boolean isStart,
                                                                  boolean isInclusive,
                                                                  boolean isOtherBoundInclusive,
-                                                                 List<ColumnMetadata> columnDefs);
+                                                                 List<ColumnDefinition> columnDefs);
 
     /**
      * Builds the <code>ClusteringBound</code>s
@@ -266,7 +279,7 @@ public abstract class MultiCBuilder
         public NavigableSet<ClusteringBound> buildBoundForSlice(boolean isStart,
                                                                 boolean isInclusive,
                                                                 boolean isOtherBoundInclusive,
-                                                                List<ColumnMetadata> columnDefs)
+                                                                List<ColumnDefinition> columnDefs)
         {
             return buildBound(isStart, columnDefs.get(0).isReversedType() ? isOtherBoundInclusive : isInclusive);
         }
@@ -303,7 +316,12 @@ public abstract class MultiCBuilder
         {
             super(comparator);
         }
-
+        
+        public MultiCBuilder disableSorting(){
+        	sortAndFilter = false;
+        	return this;
+        }
+        
         public MultiCBuilder addElementToAll(ByteBuffer value)
         {
             checkUpdateable();
@@ -409,7 +427,7 @@ public abstract class MultiCBuilder
             if (elementsList.isEmpty())
                 return BTreeSet.of(builder.comparator(), builder.build());
 
-            BTreeSet.Builder<Clustering> set = BTreeSet.builder(builder.comparator());
+            BTreeSet.Builder<Clustering> set = sortAndFilter ? BTreeSet.builder(builder.comparator()) : BTreeSet.builder(comparator, sortAndFilter);
             for (int i = 0, m = elementsList.size(); i < m; i++)
             {
                 List<ByteBuffer> elements = elementsList.get(i);
@@ -421,7 +439,7 @@ public abstract class MultiCBuilder
         public NavigableSet<ClusteringBound> buildBoundForSlice(boolean isStart,
                                                             boolean isInclusive,
                                                             boolean isOtherBoundInclusive,
-                                                            List<ColumnMetadata> columnDefs)
+                                                            List<ColumnDefinition> columnDefs)
         {
             built = true;
 
@@ -454,7 +472,7 @@ public abstract class MultiCBuilder
                 // For example: if we have clustering_0 DESC and clustering_1 ASC a slice like (clustering_0, clustering_1) > (1, 2)
                 // will produce 2 slices: [BOTTOM, 1) and (1.2, 1]
                 // So, the END bound will return 2 bounds with the same values 1
-                ColumnMetadata lastColumn = columnDefs.get(columnDefs.size() - 1);
+                ColumnDefinition lastColumn = columnDefs.get(columnDefs.size() - 1);
                 if (elements.size() <= lastColumn.position() && i < m - 1 && elements.equals(elementsList.get(i + 1)))
                 {
                     set.add(builder.buildBoundWith(elements, isStart, false));
@@ -463,7 +481,7 @@ public abstract class MultiCBuilder
                 }
 
                 // Handle the normal bounds
-                ColumnMetadata column = columnDefs.get(elements.size() - 1 - offset);
+                ColumnDefinition column = columnDefs.get(elements.size() - 1 - offset);
                 set.add(builder.buildBoundWith(elements, isStart, column.isReversedType() ? isOtherBoundInclusive : isInclusive));
             }
             return set.build();
